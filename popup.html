@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>noDelayStream</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>noDelayStream</h1>
+      <button id="refresh" title="Volver a buscar" aria-label="Volver a buscar">
+        ⟳
+      </button>
+    </header>
+
+    <section class="card">
+      <div class="row">
+        <span id="status" class="status">Buscando…</span>
+      </div>
+      <select id="quality-select" aria-label="Calidad" hidden></select>
+      <p id="quality-cap" class="meta" hidden></p>
+      <p id="quality-note" class="note" hidden></p>
+    </section>
+
+    <section class="card">
+      <div class="row head">
+        <h2>Velocidad</h2>
+        <span id="speed-status" class="value">—</span>
+      </div>
+      <p id="speed-meta" class="meta"></p>
+      <input
+        type="range"
+        id="speed-slider"
+        min="0"
+        max="1000"
+        step="5"
+        value="100"
+        aria-label="Velocidad"
+      />
+      <div id="speed-buttons" class="chips"></div>
+      <div class="row actions">
+        <button id="catch-up-live" class="link" hidden>Ir al vivo</button>
+        <span id="ramp-status" class="tag" hidden></span>
+      </div>
+      <p id="speed-note" class="note" hidden></p>
+    </section>
+
+    <section class="card">
+      <div class="row head">
+        <h2>Volumen</h2>
+        <span class="value"
+          ><span id="volume-value">100</span><span class="unit">%</span></span
+        >
+      </div>
+      <input
+        type="range"
+        id="volume-slider"
+        min="0"
+        max="69"
+        step="1"
+        value="19"
+        aria-label="Volumen"
+      />
+      <div id="volume-presets" class="chips">
+        <button class="quality-btn" data-percent="0">0%</button>
+        <button class="quality-btn" data-percent="100">100%</button>
+        <button class="quality-btn" data-percent="200">200%</button>
+        <button class="quality-btn" data-percent="600">600%</button>
+      </div>
+      <button id="volume-restore" class="quality-btn" hidden></button>
+      <div class="row actions">
+        <button id="volume-stop" class="link danger" hidden>Detener</button>
+      </div>
+      <p id="volume-status" class="meta">Sin captura</p>
+    </section>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

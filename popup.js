@@ -1,0 +1,747 @@
+document.addEventListener("DOMContentLoaded", () => {
+  const statusEl = document.getElementById("status");
+  const qualitySelectEl = document.getElementById("quality-select");
+  const qualityCapEl = document.getElementById("quality-cap");
+  const qualityNoteEl = document.getElementById("quality-note");
+  const refreshBtn = document.getElementById("refresh");
+  const speedStatusEl = document.getElementById("speed-status");
+  const speedMetaEl = document.getElementById("speed-meta");
+  const speedSliderEl = document.getElementById("speed-slider");
+  const speedNoteEl = document.getElementById("speed-note");
+  const rampStatusEl = document.getElementById("ramp-status");
+  const volumeStatusEl = document.getElementById("volume-status");
+  const volumeSliderEl = document.getElementById("volume-slider");
+  const volumeValueEl = document.getElementById("volume-value");
+  const volumeRestoreEl = document.getElementById("volume-restore");
+  const volumeStopEl = document.getElementById("volume-stop");
+
+  function getActiveTab(cb) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      cb(tabs && tabs[0] ? tabs[0] : null);
+    });
+  }
+
+  function getActiveTabId(cb) {
+    getActiveTab((tab) => cb(tab ? tab.id : null));
+  }
+
+  // El reproductor real puede estar en un iframe (Twitch, por ejemplo), no
+  // siempre en el frame principal de la pestaña. Mandamos el mensaje a
+  // TODOS los frames de la pestaña y nos quedamos con el primero que
+  // realmente encontró algo (found/ok en true), en vez de asumir que
+  // siempre está en el frame de arriba.
+  function getAllFrameIds(tabId, cb) {
+    if (chrome.webNavigation && chrome.webNavigation.getAllFrames) {
+      chrome.webNavigation.getAllFrames({ tabId }, (frames) => {
+        if (chrome.runtime.lastError || !frames || !frames.length) {
+          cb([0]);
+        } else {
+          cb(frames.map((f) => f.frameId));
+        }
+      });
+    } else {
+      cb([0]);
+    }
+  }
+
+  function sendToAllFrames(tabId, message, callback) {
+    getAllFrameIds(tabId, (frameIds) => {
+      let remaining = frameIds.length;
+      const responses = [];
+      let anyCommError = false;
+      if (remaining === 0) {
+        callback(null, true);
+        return;
+      }
+      frameIds.forEach((frameId) => {
+        chrome.tabs.sendMessage(tabId, message, { frameId }, (res) => {
+          remaining--;
+          if (chrome.runtime.lastError) {
+            anyCommError = true;
+          } else if (res) {
+            responses.push(res);
+          }
+          if (remaining === 0) {
+            // Esperamos a que contesten TODOS los frames antes de elegir,
+            // así una respuesta vacía que llega primero (un frame sin
+            // video) no le gana para siempre a la respuesta buena que
+            // llega un poco después.
+            const best =
+              responses.find((r) => r.found || r.ok) || responses[0] || null;
+            // El aviso de plataforma (p. ej. Netflix) puede venir de un frame
+            // distinto del que tiene el reproductor. Si la respuesta elegida
+            // no lo trae, lo tomamos de cualquier otra.
+            if (best && !best.notice) {
+              const withNotice = responses.find((r) => r && r.notice);
+              if (withNotice) best.notice = withNotice.notice;
+            }
+            callback(best, !best && anyCommError);
+          }
+        });
+      });
+    });
+  }
+
+  // Kick lee su menú abriéndolo: si el player todavía está cargando, la
+  // primera lectura puede devolver solo Auto. Reintentamos una vez, sin
+  // dejar al usuario con la sensación de que "no anda".
+  let kickAutoRetryTimer = null;
+
+  function loadQualities(opts) {
+    const isKickRetry = !!(opts && opts.kickRetry);
+    if (kickAutoRetryTimer) {
+      clearTimeout(kickAutoRetryTimer);
+      kickAutoRetryTimer = null;
+    }
+    statusEl.textContent = "Buscando…";
+    statusEl.classList.remove("ok", "error");
+    qualitySelectEl.innerHTML = "";
+    qualitySelectEl.hidden = true;
+    qualitySelectEl.disabled = false;
+    qualityCapEl.hidden = true;
+    qualityCapEl.textContent = "";
+    qualityCapEl.removeAttribute("title");
+    qualityNoteEl.hidden = true;
+    qualityNoteEl.textContent = "";
+    qualityNoteEl.removeAttribute("title");
+
+    getActiveTabId((tabId) => {
+      sendToAllFrames(tabId, { type: "get-qualities" }, (response, commError) => {
+        if (commError) {
+          statusEl.textContent = "No se pudo conectar. Recargá la pestaña.";
+          statusEl.classList.add("error");
+          return;
+        }
+
+        if (response && response.notice) {
+          qualityNoteEl.textContent = response.notice;
+          qualityNoteEl.title = response.notice;
+          qualityNoteEl.hidden = false;
+        }
+
+        if (!response || !response.found) {
+          statusEl.textContent =
+            response && response.notice
+              ? "No se pudo abrir el selector experimental."
+              : response && response.reason === "timeout"
+              ? "La página no respondió. Recargá la pestaña."
+              : "Sin reproductor compatible.";
+          statusEl.classList.add("error");
+          return;
+        }
+
+        const typeLabels = {
+          hls: "hls.js",
+          dash: "dash.js",
+          shaka: "Shaka Player",
+          youtube: "YouTube",
+          netflix: "Netflix (experimental)",
+          disney: "Disney+ (experimental)",
+          hbo: "HBO/Max (experimental)",
+          twitch: "Twitch (experimental)",
+          kick: "Kick (experimental)",
+        };
+        statusEl.textContent = typeLabels[response.type] || response.type;
+        statusEl.classList.add("ok");
+
+        if (response.cap && response.cap.text) {
+          qualityCapEl.textContent = response.cap.text;
+          qualityCapEl.title =
+            response.type === "kick"
+              ? "Calidad más alta que trae este stream (Kick no tiene planes)."
+              : "Techo real de la sesión: la calidad más alta que el reproductor puede alcanzar con esta cuenta y este equipo.";
+          qualityCapEl.hidden = false;
+        }
+
+        const qualities = response.qualities || [];
+        const realQualities = qualities.filter(
+          (q) => q.id !== "auto" && q.id !== -1
+        );
+        if (response.type === "kick" && !isKickRetry && !realQualities.length) {
+          kickAutoRetryTimer = setTimeout(() => {
+            kickAutoRetryTimer = null;
+            loadQualities({ kickRetry: true });
+          }, 1500);
+        }
+        if (!qualities.length) {
+          qualitySelectEl.hidden = true;
+          return;
+        }
+
+        qualities.forEach((q, i) => {
+          const opt = document.createElement("option");
+          opt.value = String(i);
+          opt.textContent = q.label;
+          if (q.active) opt.selected = true;
+          qualitySelectEl.appendChild(opt);
+        });
+        qualitySelectEl.hidden = false;
+        qualitySelectEl.onchange = () => {
+          const q = qualities[Number(qualitySelectEl.value)];
+          if (!q) return;
+          qualitySelectEl.disabled = true;
+          sendToAllFrames(tabId, { type: "set-quality", id: q.id }, () => {
+            setTimeout(loadQualities, 500);
+          });
+        };
+      });
+    });
+  }
+
+  const speedButtonsEl = document.getElementById("speed-buttons");
+  const RATES = [0.75, 1, 1.25, 2];
+
+  let speedSliderDragging = false;
+  let speedPollActive = false;
+  // Mensaje temporal que gana sobre el aviso contextual del poll (que se
+  // recalcula cada 250 ms y si no, lo pisaría al instante).
+  let transientNote = null;
+
+  function showTransientNote(text, ms) {
+    transientNote = { text, until: Date.now() + (ms || 6000) };
+    speedNoteEl.hidden = false;
+    speedNoteEl.textContent = text;
+  }
+
+  function formatSpeedMeta(info) {
+    const parts = [];
+    if (info.delaySeconds != null) {
+      parts.push(`${info.delaySeconds.toFixed(1)} s delay`);
+    }
+    if (info.bufferSeconds != null) {
+      parts.push(`${info.bufferSeconds.toFixed(1)} s buffer`);
+    }
+    return parts.join(" · ");
+  }
+
+  function updateSpeedNote(info) {
+    if (transientNote) {
+      if (Date.now() < transientNote.until) {
+        speedNoteEl.hidden = false;
+        speedNoteEl.textContent = transientNote.text;
+        return;
+      }
+      transientNote = null;
+    }
+    if (!info || !info.found) {
+      speedNoteEl.hidden = true;
+      return;
+    }
+    if (info.released) {
+      speedNoteEl.hidden = false;
+      speedNoteEl.textContent =
+        info.releaseReason === "site-overrides"
+          ? "El sitio revirtió la velocidad; se soltó el control."
+          : "Control de velocidad liberado.";
+      return;
+    }
+    if (info.pinned && Math.abs(info.desired - info.rate) > 0.01) {
+      speedNoteEl.hidden = false;
+      speedNoteEl.textContent = "El sitio puso otro valor; reafirmando.";
+      return;
+    }
+    if (info.atLiveEdge && info.desired > 1) {
+      speedNoteEl.hidden = false;
+      speedNoteEl.textContent = "Borde del vivo: 1× hasta que crezca el delay.";
+      return;
+    }
+    speedNoteEl.hidden = true;
+  }
+
+  function sendSetSpeed(tabId, rate, onDone) {
+    sendToAllFrames(tabId, { type: "set-speed", rate }, (res, commError) => {
+      if (commError) {
+        speedStatusEl.textContent = "—";
+        speedNoteEl.hidden = false;
+        speedNoteEl.textContent = "No se pudo conectar. Recargá la pestaña.";
+        return;
+      }
+      if (res && res.ok === false && res.reason === "blocked") {
+        speedNoteEl.hidden = false;
+        speedNoteEl.textContent = "Este sitio bloquea los cambios de velocidad.";
+        return;
+      }
+      if (onDone) onDone();
+    });
+  }
+
+  function buildSpeedButtons() {
+    speedButtonsEl.innerHTML = "";
+    RATES.forEach((rate) => {
+      const btn = document.createElement("button");
+      btn.dataset.rate = String(rate);
+      btn.textContent = `${rate}×`;
+      btn.className = "quality-btn";
+      btn.addEventListener("click", () => {
+        speedSliderEl.value = String(Math.round(rate * 100));
+        getActiveTabId((tabId) => {
+          sendSetSpeed(tabId, rate, () => pollSpeedOnce(tabId));
+        });
+      });
+      speedButtonsEl.appendChild(btn);
+    });
+  }
+
+  function updateRampStatus(info) {
+    const phase = info && info.rampPhase;
+    if (!info || !info.found || !info.live || phase !== "ramping") {
+      rampStatusEl.hidden = true;
+      return;
+    }
+    rampStatusEl.hidden = false;
+    rampStatusEl.textContent = "Ajuste 1,06×";
+  }
+
+  function updateSpeedStatus(info) {
+    if (!info || !info.found) {
+      speedStatusEl.textContent = "—";
+      speedStatusEl.classList.remove("pinned");
+      speedStatusEl.removeAttribute("title");
+      speedMetaEl.textContent = "";
+      speedNoteEl.hidden = true;
+      rampStatusEl.hidden = true;
+      catchUpBtn.hidden = true;
+      return;
+    }
+    // El slider y los botones reflejan la velocidad PEDIDA, no la efectiva.
+    // En vivo, cerca del borde la efectiva es 1× a propósito; si el slider
+    // siguiera eso, saltaría todo el tiempo entre 1× y el valor elegido.
+    const shownRate =
+      info.pinned || (info.desired != null && info.desired !== 1)
+        ? info.desired
+        : info.rate;
+    speedStatusEl.textContent = `${shownRate.toFixed(2)}×`;
+    speedStatusEl.classList.toggle("pinned", !!info.pinned);
+    let title = "";
+    if (info.pinned) {
+      title = "Velocidad fijada por vos.";
+      if (info.blockedWrites > 0) {
+        title += ` El sitio intentó cambiarla ${info.blockedWrites} ${
+          info.blockedWrites === 1 ? "vez" : "veces"
+        }; bloqueado.`;
+      }
+    }
+    speedStatusEl.title = title;
+    speedMetaEl.textContent = formatSpeedMeta(info);
+    catchUpBtn.hidden = !info.live;
+    updateSpeedNote(info);
+    updateRampStatus(info);
+    if (!speedSliderDragging) {
+      speedSliderEl.value = String(Math.round(shownRate * 100));
+    }
+    speedButtonsEl.querySelectorAll(".quality-btn").forEach((btn) => {
+      const rate = parseFloat(btn.dataset.rate);
+      const active = Math.abs(shownRate - rate) < 0.01;
+      btn.classList.toggle("active", active);
+    });
+  }
+
+  function handleSpeedInfo(tabId, info, commError) {
+    updateSpeedStatus(commError ? null : info);
+  }
+
+  function pollSpeedOnce(tabId) {
+    sendToAllFrames(tabId, { type: "get-speed-info" }, (info, commError) => {
+      handleSpeedInfo(tabId, info, commError);
+    });
+  }
+
+  // En vez de un intervalo fijo (ej. cada 1000ms), antes esto volvía a
+  // preguntar apenas llegaba la respuesta anterior, lo que en la práctica
+  // significaba cientos de mensajes por segundo y un escaneo de página por
+  // cada uno. Ahora hay un piso de 250 ms: sigue siendo fluido para el
+  // contador de buffer y deja de castigar la pestaña.
+  const SPEED_POLL_INTERVAL_MS = 250;
+
+  function speedPollLoop(tabId) {
+    if (!speedPollActive) return;
+    sendToAllFrames(tabId, { type: "get-speed-info" }, (info, commError) => {
+      handleSpeedInfo(tabId, info, commError);
+      if (speedPollActive) {
+        setTimeout(() => speedPollLoop(tabId), SPEED_POLL_INTERVAL_MS);
+      }
+    });
+  }
+
+  function loadSpeed() {
+    getActiveTabId((tabId) => {
+      sendToAllFrames(tabId, { type: "get-speed-info" }, (info, commError) => {
+        handleSpeedInfo(tabId, info, commError);
+        // El polling se arranca pase lo que pase (aunque todavía no se haya
+        // encontrado nada), para que el estado se actualice apenas aparezca el
+        // video.
+        if (!speedPollActive) {
+          speedPollActive = true;
+          speedPollLoop(tabId);
+        }
+      });
+    });
+  }
+
+  speedSliderEl.addEventListener("input", () => {
+    speedSliderDragging = true;
+    const rate = parseInt(speedSliderEl.value, 10) / 100;
+    speedStatusEl.textContent = `${rate.toFixed(2)}×`;
+    getActiveTabId((tabId) => sendSetSpeed(tabId, rate));
+  });
+
+  speedSliderEl.addEventListener("change", () => {
+    speedSliderDragging = false;
+  });
+
+  const catchUpBtn = document.getElementById("catch-up-live");
+
+  function catchUpMessage(res) {
+    if (!res || res.ok === false) {
+      const reason = res && res.reason;
+      if (reason === "already-live") return "Ya estás al día.";
+      if (reason === "not-live") return "Solo para transmisiones en vivo.";
+      if (reason === "no-buffer") return "Falta buffer. Esperá un poco.";
+      if (reason === "no-video") return "No encontré el video.";
+      if (reason === "timeout") return "La página no respondió.";
+      return "No se pudo saltar al vivo.";
+    }
+    const jump =
+      res.jumpSeconds != null ? `${res.jumpSeconds.toFixed(1)} s` : "un tramo";
+    return `Saltamos ${jump} hacia el vivo.`;
+  }
+
+  catchUpBtn.addEventListener("click", () => {
+    const label = catchUpBtn.textContent;
+    catchUpBtn.disabled = true;
+    catchUpBtn.textContent = "Saltando…";
+    getActiveTabId((tabId) => {
+      sendToAllFrames(tabId, { type: "catch-up-live" }, (res, commError) => {
+        catchUpBtn.disabled = false;
+        catchUpBtn.textContent = label;
+        if (commError) {
+          showTransientNote("No se pudo conectar. Recargá la pestaña.");
+          return;
+        }
+        showTransientNote(catchUpMessage(res), 8000);
+        pollSpeedOnce(tabId);
+      });
+    });
+  });
+
+  // --- Volumen por captura de pestaña (tabCapture) ---------------------------
+  //
+  // Igual que Volume Master: se captura el audio ya mezclado de la pestaña y
+  // se le aplica una ganancia. No se toca el <video> ni la Web Audio del
+  // sitio, así que funciona también con contenido DRM y con varios
+  // reproductores a la vez.
+  //
+  // El slider NO representa porcentajes: representa índices de una lista de
+  // valores (0..9 de a 1, después 10..600 de a 10), igual que Volume Master.
+  // Así los valores bajos tienen precisión fina y el resto va de 10 en 10.
+
+  const VOLUME_VALUE_MAX = 600;
+  const VOLUME_VALUE_DEFAULT = 100;
+  const VOLUME_DOMAIN_KEY = "nds-volume-domains";
+  const VOLUME_SLIDER_VALUES = (() => {
+    const values = [];
+    for (let i = 0; i < 10; i++) values.push(i);
+    for (let i = 10; i <= VOLUME_VALUE_MAX; i += 10) values.push(i);
+    return values;
+  })();
+
+  let volumeValue = VOLUME_VALUE_DEFAULT;
+  let volumeSliderDragging = false;
+  let volumePollTimer = null;
+  let volumeTab = null;
+  let volumeDomain = null;
+  let volumeActive = false;
+  let volumeBusy = false;
+  let volumeBusyText = "";
+  let volumeLastWheelAt = 0;
+
+  function clampVolume(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return VOLUME_VALUE_DEFAULT;
+    return Math.max(0, Math.min(VOLUME_VALUE_MAX, Math.round(n)));
+  }
+
+  function volumeIndexOf(percent) {
+    const target = clampVolume(percent);
+    let best = 0;
+    let bestDiff = Infinity;
+    VOLUME_SLIDER_VALUES.forEach((value, index) => {
+      const diff = Math.abs(value - target);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = index;
+      }
+    });
+    return best;
+  }
+
+  function volumePercentAt(index) {
+    const i = Math.max(
+      0,
+      Math.min(VOLUME_SLIDER_VALUES.length - 1, parseInt(index, 10) || 0)
+    );
+    return VOLUME_SLIDER_VALUES[i];
+  }
+
+  function renderVolumeValue(percent) {
+    volumeValue = clampVolume(percent);
+    volumeValueEl.textContent = String(volumeValue);
+    // No pisamos el slider mientras el usuario lo está arrastrando, para que
+    // no "salte" bajo su dedo/mouse.
+    if (!volumeSliderDragging) {
+      volumeSliderEl.value = String(volumeIndexOf(volumeValue));
+    }
+  }
+
+  function persistDomainVolume(percent) {
+    if (!volumeDomain) return;
+    chrome.storage.local.get({ [VOLUME_DOMAIN_KEY]: {} }, (data) => {
+      const all = data[VOLUME_DOMAIN_KEY] || {};
+      if (percent === VOLUME_VALUE_DEFAULT) {
+        delete all[volumeDomain];
+      } else {
+        all[volumeDomain] = { volume: percent };
+      }
+      chrome.storage.local.set({ [VOLUME_DOMAIN_KEY]: all });
+    });
+  }
+
+  function loadDomainMemory() {
+    if (!volumeTab || !volumeTab.url) return;
+    try {
+      const url = new URL(volumeTab.url);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return;
+      volumeDomain = url.hostname;
+    } catch (e) {
+      return;
+    }
+    chrome.storage.local.get({ [VOLUME_DOMAIN_KEY]: {} }, (data) => {
+      const all = data[VOLUME_DOMAIN_KEY] || {};
+      const saved = all[volumeDomain] && all[volumeDomain].volume;
+      if (Number.isInteger(saved) && saved >= 0 && saved <= VOLUME_VALUE_MAX) {
+        volumeRestoreEl.textContent = `Restaurar ${saved}%`;
+        volumeRestoreEl.title = `Volver a ${saved}% en ${volumeDomain}`;
+        volumeRestoreEl.dataset.percent = String(saved);
+        // Igual que Volume Master: si ya hay captura activa, no ofrecemos
+        // restaurar (el valor que manda es el que está aplicado).
+        volumeRestoreEl.hidden = volumeActive;
+      } else {
+        volumeRestoreEl.hidden = true;
+      }
+    });
+  }
+
+  function setVolumeStatus(text, isError) {
+    volumeStatusEl.textContent = text;
+    volumeStatusEl.classList.toggle("error", !!isError);
+  }
+
+  function applyVolume(percent, opts) {
+    const value = clampVolume(percent);
+    renderVolumeValue(value);
+    volumeRestoreEl.hidden = true;
+    volumeBusy = false;
+    setVolumeStatus("Activando…");
+    if (opts && opts.persist) persistDomainVolume(value);
+
+    if (!volumeTab) return;
+    const tabId = volumeTab.id;
+    chrome.runtime.sendMessage(
+      { target: "nds-background", type: "nds-volume-set", tabId, percent: value },
+      (res) => {
+        if (chrome.runtime.lastError) {
+          volumeActive = false;
+          setVolumeStatus("No se pudo hablar con la extensión.", true);
+          return;
+        }
+        if (!res || !res.ok) {
+          volumeActive = false;
+          if (res && res.reason === "busy") {
+            volumeBusy = true;
+            volumeBusyText =
+              res.message || "Otra extensión está capturando esta pestaña.";
+            setVolumeStatus(volumeBusyText, true);
+          } else {
+            setVolumeStatus(
+              (res && res.message) || "No se pudo activar la captura.",
+              true
+            );
+          }
+          return;
+        }
+        volumeActive = true;
+        volumeBusy = false;
+        const applied = res.percent != null ? res.percent : value;
+        renderVolumeValue(applied);
+        setVolumeStatus("Captura activa");
+        volumeStopEl.hidden = false;
+        chrome.action.setBadgeText({ text: String(applied), tabId });
+      }
+    );
+  }
+
+  function updateVolumeFromStatus(res) {
+    if (!res) return;
+    if (res.active) {
+      volumeActive = true;
+      volumeBusy = false;
+      volumeStopEl.hidden = false;
+      const percent = clampVolume(
+        res.percent != null ? res.percent : volumeValue
+      );
+      renderVolumeValue(percent);
+      setVolumeStatus("Captura activa");
+      volumeRestoreEl.hidden = true;
+      return;
+    }
+    volumeActive = false;
+    if (!volumeBusy) {
+      setVolumeStatus("Sin captura");
+      volumeStopEl.hidden = true;
+    }
+  }
+
+  function pollVolumeStatus() {
+    if (!volumeTab) return;
+    chrome.runtime.sendMessage(
+      {
+        target: "nds-background",
+        type: "nds-volume-get",
+        tabId: volumeTab.id,
+      },
+      (res) => {
+        if (chrome.runtime.lastError) return;
+        updateVolumeFromStatus(res);
+      }
+    );
+  }
+
+  function loadVolume() {
+    getActiveTab((tab) => {
+      if (!tab) {
+        setVolumeStatus("No se pudo leer la pestaña.", true);
+        return;
+      }
+      volumeTab = tab;
+      loadDomainMemory();
+      chrome.runtime.sendMessage(
+        {
+          target: "nds-background",
+          type: "nds-volume-get",
+          tabId: tab.id,
+        },
+        (res) => {
+          if (chrome.runtime.lastError) return;
+          if (res && res.active) {
+            updateVolumeFromStatus(res);
+          } else {
+            setVolumeStatus("Sin captura");
+          }
+        }
+      );
+      if (!volumePollTimer) {
+        volumePollTimer = setInterval(pollVolumeStatus, 1500);
+      }
+    });
+  }
+
+  volumeSliderEl.addEventListener("input", () => {
+    volumeSliderDragging = true;
+    applyVolume(volumePercentAt(volumeSliderEl.value));
+  });
+
+  volumeSliderEl.addEventListener("change", () => {
+    volumeSliderDragging = false;
+    persistDomainVolume(volumeValue);
+  });
+
+  // Rueda del mouse: un paso por vez y como máximo un cambio cada 100 ms,
+  // igual que Volume Master. deltaY positivo sube el índice (rueda abajo).
+  volumeSliderEl.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      const now = Date.now();
+      if (now - volumeLastWheelAt < 100) return;
+      volumeLastWheelAt = now;
+      const current = parseInt(volumeSliderEl.value, 10) || 0;
+      const next = Math.max(
+        0,
+        Math.min(
+          VOLUME_SLIDER_VALUES.length - 1,
+          current + Math.sign(e.deltaY)
+        )
+      );
+      volumeSliderEl.value = String(next);
+      volumeSliderEl.dispatchEvent(new Event("input"));
+      volumeSliderEl.dispatchEvent(new Event("change"));
+    },
+    { passive: false }
+  );
+
+  document.querySelectorAll("#volume-presets .quality-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      applyVolume(parseInt(btn.dataset.percent, 10), { persist: true });
+    });
+  });
+
+  volumeRestoreEl.addEventListener("click", () => {
+    const saved = parseInt(volumeRestoreEl.dataset.percent, 10);
+    if (Number.isInteger(saved)) applyVolume(saved, { persist: true });
+  });
+
+  volumeStopEl.addEventListener("click", () => {
+    if (!volumeTab) return;
+    const tabId = volumeTab.id;
+    chrome.runtime.sendMessage(
+      { target: "nds-background", type: "nds-volume-stop", tabId },
+      () => {
+        volumeActive = false;
+        volumeBusy = false;
+        volumeStopEl.hidden = true;
+        setVolumeStatus("Sin captura");
+        chrome.action.setBadgeText({ text: "", tabId });
+      }
+    );
+  });
+
+  // Teclas numéricas dentro del popup: 0 = 0%, 1 = 100%, ... 6 = 600%.
+  // Las que caen fuera del rango (7, 8, 9) se ignoran, igual que Volume Master.
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const target = e.target;
+    const tag = target && target.tagName;
+    const isTextField =
+      tag === "TEXTAREA" ||
+      tag === "SELECT" ||
+      (tag === "INPUT" &&
+        target.type !== "range" &&
+        target.type !== "checkbox" &&
+        target.type !== "radio") ||
+      (target && target.isContentEditable);
+    if (isTextField) return;
+    if (typeof e.key !== "string" || e.key.length !== 1) return;
+    const digit = Number(e.key);
+    if (!Number.isInteger(digit)) return;
+    const percent = digit * 100;
+    if (percent > VOLUME_VALUE_MAX) return;
+    e.preventDefault();
+    applyVolume(percent, { persist: true });
+  });
+
+  window.addEventListener("unload", () => {
+    speedPollActive = false;
+    if (volumePollTimer) clearInterval(volumePollTimer);
+  });
+
+  refreshBtn.addEventListener("click", () => {
+    loadQualities();
+    loadSpeed();
+    loadVolume();
+  });
+
+  buildSpeedButtons();
+  loadQualities();
+  loadSpeed();
+  loadVolume();
+});
