@@ -10,7 +10,7 @@ motor que usa el sitio (hls.js, dash.js, Shaka, YouTube, Twitch, Netflix,
 Disney+ o HBO/Max) y usa su API cuando existe. Si no la encuentra, degrada sin
 romper la reproducción.
 
-Versión actual: **1.5.2**.
+Versión actual: **1.5.3**.
 
 ---
 
@@ -112,8 +112,8 @@ El popup muestra el **delay** (distancia al borde del vivo) y el **buffer**
 
 ### Ajuste único de arranque (rampa)
 
-En vivos con segmentos largos (por ejemplo DGO/Shaka), la extensión puede hacer
-un único ajuste al principio:
+En vivos con segmentos largos, la extensión puede hacer un único ajuste al
+principio:
 
 1. Mide el tamaño de la ráfaga observando cada cuánto crece el buffer.
 2. Cuando hay ~2 ráfagas buffereadas, pone **1,06×**.
@@ -121,12 +121,26 @@ un único ajuste al principio:
 
 Condiciones:
 
+- **Solo se activa en Shaka/DGO**, el motor para el que fue diseñada. En
+  YouTube, Twitch, Kick, hls.js, dash.js y el resto de los motores nunca cambia
+  la velocidad por su cuenta.
 - Solo se activa con vivo confirmado por el player durante al menos 3 segundos.
 - No se activa si la ráfaga medida es menor a 3 segundos (Twitch, por ejemplo:
   ahí el buffer ya es corto).
 - No se activa si vos elegiste una velocidad.
+- Al cambiar de fuente (otro video o episodio) la rampa se cancela, se vuelve a
+  1× y se vuelve a medir desde cero.
 - Tiene un tope de seguridad de 180 segundos.
 - Nunca deja menos de 3,5 segundos de buffer por delante.
+
+Para desactivarla del todo, en la consola de la pestaña:
+
+```js
+localStorage.setItem("qs-ramp", "off")
+```
+
+Con `qs-ramp` en `0`, `off` o `false` la rampa no se ejecuta en ese sitio. Para
+volver a habilitarla: `localStorage.removeItem("qs-ramp")`.
 
 ### Ir al vivo
 
@@ -356,7 +370,7 @@ Con la consola de DevTools abierta en la página del video:
 
 | Comando | Qué muestra |
 | --- | --- |
-| `__qsSpeedDebug()` | velocidad pedida/real, pin, reversiones bloqueadas, rampa |
+| `__qsSpeedDebug()` | velocidad pedida/real, pin, reversiones bloqueadas, `live`, fase/motivo de la rampa y si está desactivada |
 | `__qsNetflixDebug()` | estado de sesiones, playback, streams y video |
 | `__qsDisneyDebug()` | master interceptado, variantes, piso y destope |
 | `__qsHboDebug()` | sesión Gluon, variantes, selección y override |

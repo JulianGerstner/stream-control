@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "noDelayStream",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "Velocidad, calidad y volumen del video de la pestaña activa. En vivo reduce el delay sin pelear con el reproductor.",
   "permissions": [
     "activeTab",

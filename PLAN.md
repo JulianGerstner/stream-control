@@ -16,6 +16,16 @@ otras plataformas.
 > el sondeo 1080p. Además, las calidades se muestran en un **desplegable**
 > (`<select>`) en todas las plataformas. Ver sección 6.1.
 
+> **Nota 1.5.3**: la rampa de arranque de **1,06×** quedó acotada a
+> **Shaka/DGO**. En YouTube, Twitch, Kick, hls.js y dash.js ya no toca la
+> velocidad nunca. Además, `skip`/`abort` ahora **sueltan el pin** (antes podían
+> dejar el video clavado en 1,06×), un cambio de fuente cancela la rampa en
+> curso y la vuelve a medir desde cero, y la detección de vivo de YouTube ya no
+> usa `isLiveContent` solo (vale también para repeticiones de directos). Se
+> agregó el opt-out `localStorage.setItem("qs-ramp", "off")` y los campos
+> `rampPhase`/`rampReason`/`rampBurst`/`rampWrites`/`live` en
+> `__qsSpeedDebug()`. Ver sección 16.
+
 > **Nota 1.5.2**: se corrigió el bug de Kick que abría el menú de
 > **subtítulos** en vez del de calidades. El engranaje se elige por nombre/ícono
 > de ajustes y, si no hay, por cercanía a la esquina inferior derecha,
@@ -771,3 +781,37 @@ nombre.
 - `manifest.json` — versión `1.4.8`.
 - `README.md` / `PLAN.md` — changelog, sección HBO/Max, limitaciones y
   checklist de prueba.
+
+## 16. Archivos tocados en v1.5.3
+
+- `page-hook.js` — rampa de arranque acotada a **Shaka/DGO**:
+  - `rampSample()` descarta cualquier otro motor (`motor-no-shaka`) y solo
+    arranca con Shaka confirmado.
+  - `isAdapterPage()` (Twitch/Kick) corta la rampa sin esperar el timeout.
+  - `releaseRampRate()` suelta el pin de 1,06×; `abortStartupRamp()` y
+    `skipStartupRamp()` lo llaman. `resetStartupRamp()` también libera si
+    estaba `ramping`.
+  - `startRampTimer()` centraliza el intervalo; `resetStartupRamp()` lo
+    rearranca y `finish`/`skip`/`abort` lo detienen.
+  - `restart` en `emptied`/`loadstart` ya no ignora `measuring`/`ramping`:
+    finaliza la rampa, vuelve a 1× y mide de nuevo.
+  - `ensureRampWatch()` respeta el opt-out `qs-ramp=0|off|false`.
+  - `playerLiveHint()` de YouTube ya no trata `isLiveContent` como vivo: exige
+    `duration === Infinity`; con duración finita devuelve `vod`.
+  - `__qsSpeedDebug()` expone `live`, `rampPhase`, `rampReason`, `rampBurst`,
+    `rampWrites` y `rampDisabled`.
+- `manifest.json` — versión `1.5.3`.
+- `README.md` — condiciones de la rampa, opt-out y diagnóstico.
+- `PLAN.md` — esta sección.
+
+### Prueba de la rampa (1.5.3)
+
+1. YouTube: abrir un directo, dejarlo unos segundos y pasar a una canción sin
+   recargar. La velocidad debe quedar en 1×; `__qsSpeedDebug()` debe mostrar
+   `rampPhase: "skipped"` y `rampReason: "motor-no-shaka"`.
+2. Repetición de un directo (`isLiveContent: true` con duración finita): no
+   debe considerarse vivo.
+3. DGO/Shaka: la rampa sigue funcionando (`rampPhase: "ramping"`, popup con
+   “Ajuste 1,06×”) y vuelve a 1× sola.
+4. Opt-out: `localStorage.setItem("qs-ramp","off")` y recargar. La rampa no
+   corre (`rampDisabled: true`).

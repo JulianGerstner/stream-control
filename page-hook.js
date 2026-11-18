@@ -5233,8 +5233,18 @@
           if (vd && typeof vd.isLive === "boolean") {
             return vd.isLive ? "live" : "vod";
           }
+          // isLiveContent también vale true en repeticiones de directos, así que
+          // por sí solo no alcanza: solo lo damos por vivo si la duración es
+          // infinita (un vivo real). Con duración finita es un VOD.
           if (vd && typeof vd.isLiveContent === "boolean") {
-            return vd.isLiveContent ? "live" : "vod";
+            if (!vd.isLiveContent) return "vod";
+            try {
+              const el = resolveVideoElement(player);
+              const d = el ? el.duration : NaN;
+              if (d === Infinity) return "live";
+              if (typeof d === "number" && isFinite(d) && d > 0) return "vod";
+            } catch (e) {}
+            return "unknown";
           }
         }
         return "unknown";
@@ -5732,7 +5742,39 @@
 
   const rampWatched = new WeakSet();
 
+  function rampDisabledByUser() {
+    try {
+      const value = localStorage.getItem("qs-ramp");
+      return value === "0" || value === "off" || value === "false";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Suelta el 1,06x que puso la rampa, sin tocar una velocidad elegida por el
+  // usuario. Sin esto, un aborto o un cambio de fuente dejaba el pin huérfano
+  // y el video quedaba clavado en 1,06x para siempre.
+  function releaseRampRate() {
+    const video = rampState.video;
+    if (!video) return;
+    const state = rateControlState.get(video);
+    if (!state || state.userPinned) return;
+    if (Math.abs(state.desired - RAMP_CFG.rate) > 0.02) return;
+    unpinPlaybackRate(video);
+  }
+
+  function startRampTimer() {
+    if (rampState.timer != null) return;
+    if (rampState.phase === "done" || rampState.phase === "skipped") return;
+    rampState.timer = setInterval(() => {
+      try {
+        rampSample();
+      } catch (e) {}
+    }, RAMP_CFG.sampleMs);
+  }
+
   function resetStartupRamp(video, reason) {
+    if (rampState.phase === "ramping") releaseRampRate();
     if (rampState.timer) {
       clearInterval(rampState.timer);
       rampState.timer = null;
@@ -5753,6 +5795,7 @@
     rampState.writes = 0;
     rampState.liveSince = 0;
     rampState.liveLostSince = 0;
+    if (video) startRampTimer();
   }
 
   function stopRampTimer() {
@@ -5778,12 +5821,14 @@
   // Abortar sin escribir velocidad: lo usa el control manual del usuario o
   // una reversión del sitio. Nunca pisamos una elección explícita.
   function abortStartupRamp(reason) {
+    releaseRampRate();
     rampState.phase = "skipped";
     rampState.reason = reason;
     stopRampTimer();
   }
 
   function skipStartupRamp(reason) {
+    releaseRampRate();
     rampState.phase = "skipped";
     rampState.reason = reason;
     stopRampTimer();
@@ -5802,6 +5847,30 @@
     }
 
     const now = performance.now();
+
+    // Twitch/Kick no exponen un player Shaka: la rampa no aplica ahí.
+    if (isAdapterPage()) {
+      skipStartupRamp("motor-no-shaka");
+      return;
+    }
+
+    // La rampa es solo para Shaka/DGO: es el único motor con segmentos en
+    // ráfagas donde aporta. Si el player ya se identificó y no es Shaka
+    // (YouTube, hls.js, Twitch, Kick…), no tocamos la velocidad.
+    const rampPlayer = getPlayerForVideo(video);
+    const shakaPlayer = !!(rampPlayer && rampPlayer.type === "shaka");
+    if (rampPlayer && !shakaPlayer) {
+      if (rampState.phase === "ramping") {
+        finishStartupRamp("motor-no-shaka");
+      } else {
+        skipStartupRamp("motor-no-shaka");
+      }
+      return;
+    }
+    if (rampDisabledByUser()) {
+      skipStartupRamp("deshabilitada");
+      return;
+    }
 
     // La rampa es solo para vivos reales. duration por sí sola miente en los
     // dos sentidos (YouTube live con DVR da finita; Disney VOD da Infinity un
@@ -5912,6 +5981,15 @@
         return;
       }
 
+      // Sin Shaka confirmado no arrancamos: puede ser un motor que no
+      // necesita la rampa o un falso "vivo" (YouTube, repeticiones, etc.).
+      if (!shakaPlayer) {
+        if (now - rampState.startedAt > RAMP_CFG.measureTimeoutMs) {
+          skipStartupRamp("motor-no-shaka");
+        }
+        return;
+      }
+
       if (buffer >= RAMP_CFG.startBufferBursts * rampState.burst) {
         rampState.stopBuffer = Math.max(
           RAMP_CFG.minBufferFloorSeconds,
@@ -5951,6 +6029,12 @@
 
   function ensureRampWatch(video) {
     if (!video || !isRealMediaElement(video)) return;
+    if (rampDisabledByUser()) {
+      if (rampState.phase === "measuring" || rampState.phase === "ramping") {
+        skipStartupRamp("deshabilitada");
+      }
+      return;
+    }
 
     const current = rampState.video;
     if (current && current !== video) {
@@ -5974,12 +6058,12 @@
     if (!rampWatched.has(video)) {
       rampWatched.add(video);
 
-      // Un cambio de fuente es una transmisión nueva: ahí sí tiene sentido
-      // volver a medir y hacer una rampa.
+      // Un cambio de fuente es una transmisión nueva: se suelta cualquier
+      // rampa en curso (aunque esté midiendo o rampeando) y se vuelve a medir.
       const restart = () => {
         if (rampState.video !== video) return;
-        if (rampState.phase === "measuring" || rampState.phase === "ramping") {
-          return;
+        if (rampState.phase === "ramping") {
+          finishStartupRamp("nueva-fuente");
         }
         resetStartupRamp(video, "nueva-fuente");
       };
@@ -6094,6 +6178,12 @@
       blockedSiteWrites: state ? state.blockedSiteWrites : 0,
       userRateChoice,
       locked: !!(video && rateLocked.has(video)),
+      live: video ? detectLive(video) : null,
+      rampPhase: rampState.phase,
+      rampReason: rampState.reason,
+      rampBurst: rampState.burst,
+      rampWrites: rampState.writes,
+      rampDisabled: rampDisabledByUser(),
     };
   };
 
