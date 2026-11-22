@@ -16,6 +16,14 @@ otras plataformas.
 > el sondeo 1080p. Además, las calidades se muestran en un **desplegable**
 > (`<select>`) en todas las plataformas. Ver sección 6.1.
 
+> **Nota 1.5.4**: corrección de los 6 hallazgos de seguridad priorizados. La
+> captura de audio se detiene al navegar (aunque no cambie el `tabId`), el popup
+> usa la pestaña activa real, los mensajes llevan `requestId` y los comandos van
+> solo al frame con reproductor, se validan `sender` / `tabId` / `streamId`, y
+> los datos de las páginas se comprueban por tipo antes de mostrarse. Agregado:
+> las recargas de Disney+ se agrupan (1 cada 10 s) y `IVSPlayer` solo se parchea
+> en Twitch. Ver sección 17.
+
 > **Nota 1.5.3**: la rampa de arranque de **1,06×** quedó acotada a
 > **Shaka/DGO**. En YouTube, Twitch, Kick, hls.js y dash.js ya no toca la
 > velocidad nunca. Además, `skip`/`abort` ahora **sueltan el pin** (antes podían
@@ -815,3 +823,56 @@ nombre.
    “Ajuste 1,06×”) y vuelve a 1× sola.
 4. Opt-out: `localStorage.setItem("qs-ramp","off")` y recargar. La rampa no
    corre (`rampDisabled: true`).
+
+---
+
+## 17. Archivos tocados en v1.5.4
+
+Auditoría de seguridad: no hay severidad alta (sin `eval`, XSS, `postMessage`,
+red saliente ni credenciales). Se corrigieron los 6 puntos priorizados:
+
+1. **Captura al navegar** (`background.js`): `capturedTabs` guarda la URL al
+   activar la captura. `chrome.tabs.onUpdated` la detiene cuando `changeInfo.url`
+   cambia y exige una nueva acción del usuario. `onRemoved` limpia el estado.
+2. **Pestaña activa real** (`popup.js`): se eliminó `volumeTab`. Slider, presets,
+   teclas, restaurar por dominio, consulta de estado y **Detener** usan
+   `getActiveTab()` en el momento del comando.
+3. **`requestId` anti-spoofing** (`popup.js`, `bridge.js`, `page-hook.js`): cada
+   pedido lleva un id único; el puente solo acepta la respuesta con ese id y
+   `page-hook.js` lo hace eco en las 4 respuestas. Los comandos se envían al
+   `frameId` que reportó `found` (`speedFrameId`, `qualityFrameId`), con fallback
+   al broadcast. Así un iframe hostil no puede inducir un cambio en el frame
+   principal.
+4. **Validación de emisor y significado** (`background.js`, `offscreen.js`):
+   `isFromPopup()` exige `sender.id` propio, sin `sender.tab` y la URL del popup.
+   `operableTabUrl()` exige un entero no negativo y un tab http(s) existente. El
+   offscreen exige mensajes del background, `tabId` entero, `streamId` no vacío
+   y no reutilizado (`usedStreamIds`), con tope de 32 estados de audio.
+5. **Tipos en el popup** (`popup.js`): `finiteNumber()` y `safeText()` antes de
+   `.toFixed()` y de escribir textos/etiquetas; la lista de calidades se filtra
+   a ids primitivos y se limita a 100 entradas.
+6. **Comandos de la página** (`page-hook.js`): `qs-set-speed` exige `rate`
+   numérico finito; las recargas de Disney+ pasan por `scheduleDisneyReload()`
+   (una cada 10 s, agrupando cambios seguidos) y `IVSPlayer` solo se parchea en
+   Twitch.
+
+- `manifest.json` — versión `1.5.4`.
+- `README.md` — sección "Seguridad y mensajería" y aviso de captura al navegar.
+- `PLAN.md` — esta sección.
+
+### Prueba de seguridad (1.5.4)
+
+1. Activar volumen en un video y navegar esa pestaña a otra URL: el badge se
+   limpia y el popup dice "Sin captura". El audio de la nueva página no se
+   captura.
+2. Abrir el popup, cambiar de pestaña y mover el slider: el cambio aplica a la
+   pestaña activa nueva, no a la que estaba al abrir.
+3. Volver a la pestaña original: la captura no se reactiva sola ("Detener"
+   sigue sin efecto hasta volver a activarla).
+4. En una página con iframe de terceros, el popup debe mostrar las calidades del
+   frame con reproductor; un evento `CustomEvent` falso con otro `requestId` no
+   debe cambiar la UI ni la calidad.
+5. Ejecutar `test-security.js` (VM con mocks): 19 comprobaciones de `requestId`,
+   `sender`, `tabId`, `streamId`, navegación y tipos.
+6. Regresión: `test-ramp.js` (10 PASS), `test-kick-cog.js`,
+   `test-kick-wrong-menu.js`, `test-kick-dom2.js` y `check-ids.js`.

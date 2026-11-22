@@ -22,6 +22,32 @@ let creatingOffscreen = null;
 // Serializa los pedidos por pestaña: si el usuario arrastra el slider llegan
 // muchos mensajes seguidos y no queremos pedir diez streamIds en paralelo.
 const perTabQueue = new Map();
+// pestañas con captura propia -> URL al momento de activarla. Se usa para
+// soltar la captura en cuanto la pestaña navega a otra página.
+const capturedTabs = new Map();
+
+function isFromPopup(sender) {
+  return !!(
+    sender &&
+    sender.id === chrome.runtime.id &&
+    !sender.tab &&
+    sender.url === chrome.runtime.getURL("popup.html")
+  );
+}
+
+async function operableTabUrl(tabId) {
+  if (!Number.isInteger(tabId) || tabId < 0) return null;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab || !tab.url) return null;
+    const url = new URL(tab.url);
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? tab.url
+      : null;
+  } catch (e) {
+    return null;
+  }
+}
 
 function clampVolume(value) {
   const n = Number(value);
@@ -120,6 +146,18 @@ function isBusyError(error) {
 async function setVolumeForTab(tabId, percentValue) {
   const percent = clampVolume(percentValue);
 
+  // La pestaña tiene que existir y ser una página http(s). Esto evita capturar
+  // chrome://, extensiones, la nueva pestaña o un tabId inventado.
+  const url = await operableTabUrl(tabId);
+  if (!url) {
+    return {
+      ok: false,
+      reason: "no-tab",
+      percent,
+      message: "La pestaña ya no está disponible o no es una página web.",
+    };
+  }
+
   // 1) ¿Ya tenemos captura nosotros? Entonces solo cambiamos la ganancia.
   if (await hasOffscreenDocument()) {
     const status = await sendToOffscreen({
@@ -132,7 +170,10 @@ async function setVolumeForTab(tabId, percentValue) {
         tabId,
         percent,
       });
-      if (updated && updated.ok) return updated;
+      if (updated && updated.ok) {
+        capturedTabs.set(tabId, url);
+        return updated;
+      }
       // Si falló, seguimos abajo y probamos recrear la captura.
     }
   }
@@ -179,7 +220,10 @@ async function setVolumeForTab(tabId, percentValue) {
   } catch (e) {
     result = { ok: false, error: String(e), reason: "capture-failed" };
   }
-  if (result && result.ok) return result;
+  if (result && result.ok) {
+    capturedTabs.set(tabId, url);
+    return result;
+  }
 
   return {
     ok: false,
@@ -191,10 +235,17 @@ async function setVolumeForTab(tabId, percentValue) {
   };
 }
 
-async function handleMessage(msg) {
+async function handleMessage(msg, sender) {
   if (!msg || msg.target !== BG_TARGET) return undefined;
+  // Capturar y silenciar una pestaña es privilegiado: solo el popup puede
+  // pedirlo. No hay externally_connectable, así que un sitio no llega acá;
+  // esto es defensa en profundidad.
+  if (!isFromPopup(sender)) return undefined;
 
   if (msg.type === "nds-volume-get") {
+    if (!(await operableTabUrl(msg.tabId))) {
+      return { ok: true, active: false, percent: null };
+    }
     if (!(await hasOffscreenDocument())) {
       return { ok: true, active: false, percent: null };
     }
@@ -210,7 +261,7 @@ async function handleMessage(msg) {
   }
 
   if (msg.type === "nds-volume-set") {
-    if (typeof msg.tabId !== "number") {
+    if (!(await operableTabUrl(msg.tabId))) {
       return { ok: false, reason: "no-tab" };
     }
     return enqueueForTab(msg.tabId, () =>
@@ -219,16 +270,18 @@ async function handleMessage(msg) {
   }
 
   if (msg.type === "nds-volume-stop") {
-    if (typeof msg.tabId !== "number") {
+    if (!(await operableTabUrl(msg.tabId))) {
       return { ok: false, reason: "no-tab" };
     }
     return enqueueForTab(msg.tabId, async () => {
       if (!(await hasOffscreenDocument())) return { ok: true, active: false };
       try {
-        return await sendToOffscreen({
+        const result = await sendToOffscreen({
           type: "nds-offscreen-stop",
           tabId: msg.tabId,
         });
+        capturedTabs.delete(msg.tabId);
+        return result;
       } catch (e) {
         return { ok: false, error: String(e) };
       }
@@ -240,9 +293,11 @@ async function handleMessage(msg) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.target !== BG_TARGET) return false;
-  handleMessage(msg)
+  handleMessage(msg, sender)
     .then((result) => {
-      sendResponse(result === undefined ? { ok: false, reason: "unknown" } : result);
+      sendResponse(
+        result === undefined ? { ok: false, reason: "unknown" } : result
+      );
     })
     .catch((e) => {
       sendResponse({ ok: false, reason: "error", error: String(e) });
@@ -250,7 +305,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true; // respuesta asíncrona
 });
 
+// Si la pestaña navega a otra URL, el tabId no cambia: sin esto seguiríamos
+// capturando su audio (por ejemplo al pasar de un video a una llamada).
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+  if (!changeInfo || changeInfo.url === undefined) return;
+  const capturedUrl = capturedTabs.get(tabId);
+  if (!capturedUrl || changeInfo.url === capturedUrl) return;
+  capturedTabs.delete(tabId);
+  perTabQueue.delete(tabId);
+  try {
+    if (await hasOffscreenDocument()) {
+      await sendToOffscreen({ type: "nds-offscreen-stop", tabId });
+    }
+  } catch (e) {}
+  try {
+    chrome.action.setBadgeText({ text: "", tabId });
+  } catch (e) {}
+});
+
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+  capturedTabs.delete(tabId);
   try {
     if (await hasOffscreenDocument()) {
       await sendToOffscreen({ type: "nds-offscreen-stop", tabId });

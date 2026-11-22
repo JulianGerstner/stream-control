@@ -25,6 +25,25 @@ document.addEventListener("DOMContentLoaded", () => {
     getActiveTab((tab) => cb(tab ? tab.id : null));
   }
 
+  let requestSeq = 0;
+  function nextRequestId() {
+    requestSeq++;
+    return `nds-${Date.now().toString(36)}-${requestSeq}`;
+  }
+
+  // Los datos vienen de content scripts que corren dentro de páginas (y de
+  // iframes de terceros). Nunca confiamos en su tipo: un valor inesperado no
+  // debe romper el popup ni filtrarse a un reproductor ajeno.
+  function finiteNumber(value, fallback) {
+    if (value === null || value === undefined || value === "") return fallback;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function safeText(value) {
+    return value === null || value === undefined ? "" : String(value);
+  }
+
   // El reproductor real puede estar en un iframe (Twitch, por ejemplo), no
   // siempre en el frame principal de la pestaña. Mandamos el mensaje a
   // TODOS los frames de la pestaña y nos quedamos con el primero que
@@ -44,22 +63,38 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function sendToFrame(tabId, frameId, message, callback) {
+    const full = Object.assign(
+      { target: "nds-bridge", requestId: nextRequestId() },
+      message
+    );
+    chrome.tabs.sendMessage(tabId, full, { frameId }, (res) => {
+      callback(res || null, !!chrome.runtime.lastError, frameId);
+    });
+  }
+
   function sendToAllFrames(tabId, message, callback) {
     getAllFrameIds(tabId, (frameIds) => {
       let remaining = frameIds.length;
       const responses = [];
+      const requestId = nextRequestId();
       let anyCommError = false;
+      let bestFrameId = null;
       if (remaining === 0) {
-        callback(null, true);
+        callback(null, true, null);
         return;
       }
       frameIds.forEach((frameId) => {
-        chrome.tabs.sendMessage(tabId, message, { frameId }, (res) => {
+        const full = Object.assign(
+          { target: "nds-bridge", requestId },
+          message
+        );
+        chrome.tabs.sendMessage(tabId, full, { frameId }, (res) => {
           remaining--;
           if (chrome.runtime.lastError) {
             anyCommError = true;
           } else if (res) {
-            responses.push(res);
+            responses.push({ res, frameId });
           }
           if (remaining === 0) {
             // Esperamos a que contesten TODOS los frames antes de elegir,
@@ -67,15 +102,18 @@ document.addEventListener("DOMContentLoaded", () => {
             // video) no le gana para siempre a la respuesta buena que
             // llega un poco después.
             const best =
-              responses.find((r) => r.found || r.ok) || responses[0] || null;
+              responses.find((r) => r.res && (r.res.found || r.res.ok)) ||
+              responses[0] ||
+              null;
             // El aviso de plataforma (p. ej. Netflix) puede venir de un frame
             // distinto del que tiene el reproductor. Si la respuesta elegida
             // no lo trae, lo tomamos de cualquier otra.
-            if (best && !best.notice) {
-              const withNotice = responses.find((r) => r && r.notice);
-              if (withNotice) best.notice = withNotice.notice;
+            if (best && best.res && !best.res.notice) {
+              const withNotice = responses.find((r) => r.res && r.res.notice);
+              if (withNotice) best.res.notice = withNotice.res.notice;
             }
-            callback(best, !best && anyCommError);
+            bestFrameId = best ? best.frameId : null;
+            callback(best ? best.res : null, !best && anyCommError, bestFrameId);
           }
         });
       });
@@ -86,6 +124,11 @@ document.addEventListener("DOMContentLoaded", () => {
   // primera lectura puede devolver solo Auto. Reintentamos una vez, sin
   // dejar al usuario con la sensación de que "no anda".
   let kickAutoRetryTimer = null;
+  // Id del frame que realmente tiene el reproductor.Los comandos se mandan
+  // solo ahí: un iframe de terceros no puede inducirnos a cambiar la calidad
+  // del video del frame principal.
+  let speedFrameId = null;
+  let qualityFrameId = null;
 
   function loadQualities(opts) {
     const isKickRetry = !!(opts && opts.kickRetry);
@@ -106,85 +149,117 @@ document.addEventListener("DOMContentLoaded", () => {
     qualityNoteEl.removeAttribute("title");
 
     getActiveTabId((tabId) => {
-      sendToAllFrames(tabId, { type: "get-qualities" }, (response, commError) => {
-        if (commError) {
-          statusEl.textContent = "No se pudo conectar. Recargá la pestaña.";
-          statusEl.classList.add("error");
-          return;
-        }
+      sendToAllFrames(
+        tabId,
+        { type: "get-qualities" },
+        (response, commError, frameId) => {
+          if (response && response.found) qualityFrameId = frameId;
+          if (commError) {
+            statusEl.textContent = "No se pudo conectar. Recargá la pestaña.";
+            statusEl.classList.add("error");
+            return;
+          }
 
-        if (response && response.notice) {
-          qualityNoteEl.textContent = response.notice;
-          qualityNoteEl.title = response.notice;
-          qualityNoteEl.hidden = false;
-        }
+          const notice = safeText(response && response.notice);
+          if (notice) {
+            qualityNoteEl.textContent = notice;
+            qualityNoteEl.title = notice;
+            qualityNoteEl.hidden = false;
+          }
 
-        if (!response || !response.found) {
-          statusEl.textContent =
-            response && response.notice
-              ? "No se pudo abrir el selector experimental."
-              : response && response.reason === "timeout"
-              ? "La página no respondió. Recargá la pestaña."
-              : "Sin reproductor compatible.";
-          statusEl.classList.add("error");
-          return;
-        }
+          if (!response || !response.found) {
+            statusEl.textContent =
+              notice
+                ? "No se pudo abrir el selector experimental."
+                : response && response.reason === "timeout"
+                ? "La página no respondió. Recargá la pestaña."
+                : "Sin reproductor compatible.";
+            statusEl.classList.add("error");
+            return;
+          }
 
-        const typeLabels = {
-          hls: "hls.js",
-          dash: "dash.js",
-          shaka: "Shaka Player",
-          youtube: "YouTube",
-          netflix: "Netflix (experimental)",
-          disney: "Disney+ (experimental)",
-          hbo: "HBO/Max (experimental)",
-          twitch: "Twitch (experimental)",
-          kick: "Kick (experimental)",
-        };
-        statusEl.textContent = typeLabels[response.type] || response.type;
-        statusEl.classList.add("ok");
+          const typeLabels = {
+            hls: "hls.js",
+            dash: "dash.js",
+            shaka: "Shaka Player",
+            youtube: "YouTube",
+            netflix: "Netflix (experimental)",
+            disney: "Disney+ (experimental)",
+            hbo: "HBO/Max (experimental)",
+            twitch: "Twitch (experimental)",
+            kick: "Kick (experimental)",
+          };
+          statusEl.textContent = typeLabels[response.type] || safeText(response.type);
+          statusEl.classList.add("ok");
 
-        if (response.cap && response.cap.text) {
-          qualityCapEl.textContent = response.cap.text;
-          qualityCapEl.title =
-            response.type === "kick"
-              ? "Calidad más alta que trae este stream (Kick no tiene planes)."
-              : "Techo real de la sesión: la calidad más alta que el reproductor puede alcanzar con esta cuenta y este equipo.";
-          qualityCapEl.hidden = false;
-        }
+          const capText = response.cap && safeText(response.cap.text);
+          if (capText) {
+            qualityCapEl.textContent = capText;
+            qualityCapEl.title =
+              response.type === "kick"
+                ? "Calidad más alta que trae este stream (Kick no tiene planes)."
+                : "Techo real de la sesión: la calidad más alta que el reproductor puede alcanzar con esta cuenta y este equipo.";
+            qualityCapEl.hidden = false;
+          }
 
-        const qualities = response.qualities || [];
-        const realQualities = qualities.filter(
-          (q) => q.id !== "auto" && q.id !== -1
-        );
-        if (response.type === "kick" && !isKickRetry && !realQualities.length) {
-          kickAutoRetryTimer = setTimeout(() => {
-            kickAutoRetryTimer = null;
-            loadQualities({ kickRetry: true });
-          }, 1500);
-        }
-        if (!qualities.length) {
-          qualitySelectEl.hidden = true;
-          return;
-        }
+          // Un frame hostil puede mandar una lista cualquiera: descartamos
+          // entradas sin id primitivo y limitamos el tamaño.
+          const qualities = Array.isArray(response.qualities)
+            ? response.qualities
+                .filter(
+                  (q) =>
+                    q &&
+                    (typeof q.id === "number" || typeof q.id === "string") &&
+                    String(q.id).length <= 200
+                )
+                .slice(0, 100)
+                .map((q) => ({
+                  id: q.id,
+                  label: safeText(q.label),
+                  active: !!q.active,
+                }))
+            : [];
+          const realQualities = qualities.filter(
+            (q) => q.id !== "auto" && q.id !== -1
+          );
+          if (response.type === "kick" && !isKickRetry && !realQualities.length) {
+            kickAutoRetryTimer = setTimeout(() => {
+              kickAutoRetryTimer = null;
+              loadQualities({ kickRetry: true });
+            }, 1500);
+          }
+          if (!qualities.length) {
+            qualitySelectEl.hidden = true;
+            return;
+          }
 
-        qualities.forEach((q, i) => {
-          const opt = document.createElement("option");
-          opt.value = String(i);
-          opt.textContent = q.label;
-          if (q.active) opt.selected = true;
-          qualitySelectEl.appendChild(opt);
-        });
-        qualitySelectEl.hidden = false;
-        qualitySelectEl.onchange = () => {
-          const q = qualities[Number(qualitySelectEl.value)];
-          if (!q) return;
-          qualitySelectEl.disabled = true;
-          sendToAllFrames(tabId, { type: "set-quality", id: q.id }, () => {
-            setTimeout(loadQualities, 500);
+          qualities.forEach((q, i) => {
+            const opt = document.createElement("option");
+            opt.value = String(i);
+            opt.textContent = q.label;
+            if (q.active) opt.selected = true;
+            qualitySelectEl.appendChild(opt);
           });
-        };
-      });
+          qualitySelectEl.hidden = false;
+          qualitySelectEl.onchange = () => {
+            const q = qualities[Number(qualitySelectEl.value)];
+            if (!q) return;
+            qualitySelectEl.disabled = true;
+            const send = (cb) => {
+              const msg = { type: "set-quality", id: q.id };
+              if (qualityFrameId != null) {
+                sendToFrame(tabId, qualityFrameId, msg, (res, err) => {
+                  if (!err) return cb(res);
+                  sendToAllFrames(tabId, msg, cb);
+                });
+              } else {
+                sendToAllFrames(tabId, msg, cb);
+              }
+            };
+            send(() => setTimeout(loadQualities, 500));
+          };
+        }
+      );
     });
   }
 
@@ -205,12 +280,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function formatSpeedMeta(info) {
     const parts = [];
-    if (info.delaySeconds != null) {
-      parts.push(`${info.delaySeconds.toFixed(1)} s delay`);
-    }
-    if (info.bufferSeconds != null) {
-      parts.push(`${info.bufferSeconds.toFixed(1)} s buffer`);
-    }
+    const delay = finiteNumber(info.delaySeconds, null);
+    const buffer = finiteNumber(info.bufferSeconds, null);
+    if (delay != null) parts.push(`${delay.toFixed(1)} s delay`);
+    if (buffer != null) parts.push(`${buffer.toFixed(1)} s buffer`);
     return parts.join(" · ");
   }
 
@@ -235,12 +308,19 @@ document.addEventListener("DOMContentLoaded", () => {
           : "Control de velocidad liberado.";
       return;
     }
-    if (info.pinned && Math.abs(info.desired - info.rate) > 0.01) {
+    const desired = finiteNumber(info.desired, null);
+    const rate = finiteNumber(info.rate, null);
+    if (
+      info.pinned &&
+      desired != null &&
+      rate != null &&
+      Math.abs(desired - rate) > 0.01
+    ) {
       speedNoteEl.hidden = false;
       speedNoteEl.textContent = "El sitio puso otro valor; reafirmando.";
       return;
     }
-    if (info.atLiveEdge && info.desired > 1) {
+    if (info.atLiveEdge && desired != null && desired > 1) {
       speedNoteEl.hidden = false;
       speedNoteEl.textContent = "Borde del vivo: 1× hasta que crezca el delay.";
       return;
@@ -249,7 +329,8 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function sendSetSpeed(tabId, rate, onDone) {
-    sendToAllFrames(tabId, { type: "set-speed", rate }, (res, commError) => {
+    const msg = { type: "set-speed", rate };
+    const handle = (res, commError) => {
       if (commError) {
         speedStatusEl.textContent = "—";
         speedNoteEl.hidden = false;
@@ -262,7 +343,15 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
       if (onDone) onDone();
-    });
+    };
+    if (speedFrameId != null) {
+      sendToFrame(tabId, speedFrameId, msg, (res, err) => {
+        if (!err) return handle(res, false);
+        sendToAllFrames(tabId, msg, handle);
+      });
+    } else {
+      sendToAllFrames(tabId, msg, handle);
+    }
   }
 
   function buildSpeedButtons() {
@@ -306,18 +395,20 @@ document.addEventListener("DOMContentLoaded", () => {
     // El slider y los botones reflejan la velocidad PEDIDA, no la efectiva.
     // En vivo, cerca del borde la efectiva es 1× a propósito; si el slider
     // siguiera eso, saltaría todo el tiempo entre 1× y el valor elegido.
+    const desired = finiteNumber(info.desired, null);
+    const actual = finiteNumber(info.rate, null);
     const shownRate =
-      info.pinned || (info.desired != null && info.desired !== 1)
-        ? info.desired
-        : info.rate;
-    speedStatusEl.textContent = `${shownRate.toFixed(2)}×`;
+      info.pinned || (desired != null && desired !== 1) ? desired : actual;
+    const shown = finiteNumber(shownRate, 1);
+    speedStatusEl.textContent = `${shown.toFixed(2)}×`;
     speedStatusEl.classList.toggle("pinned", !!info.pinned);
     let title = "";
     if (info.pinned) {
       title = "Velocidad fijada por vos.";
-      if (info.blockedWrites > 0) {
-        title += ` El sitio intentó cambiarla ${info.blockedWrites} ${
-          info.blockedWrites === 1 ? "vez" : "veces"
+      const blocked = finiteNumber(info.blockedWrites, 0);
+      if (blocked > 0) {
+        title += ` El sitio intentó cambiarla ${blocked} ${
+          blocked === 1 ? "vez" : "veces"
         }; bloqueado.`;
       }
     }
@@ -327,22 +418,25 @@ document.addEventListener("DOMContentLoaded", () => {
     updateSpeedNote(info);
     updateRampStatus(info);
     if (!speedSliderDragging) {
-      speedSliderEl.value = String(Math.round(shownRate * 100));
+      speedSliderEl.value = String(Math.round(shown * 100));
     }
     speedButtonsEl.querySelectorAll(".quality-btn").forEach((btn) => {
       const rate = parseFloat(btn.dataset.rate);
-      const active = Math.abs(shownRate - rate) < 0.01;
+      const active = Math.abs(shown - rate) < 0.01;
       btn.classList.toggle("active", active);
     });
   }
 
-  function handleSpeedInfo(tabId, info, commError) {
+  function handleSpeedInfo(tabId, info, commError, frameId) {
+    if (!commError && info && info.found && frameId != null) {
+      speedFrameId = frameId;
+    }
     updateSpeedStatus(commError ? null : info);
   }
 
   function pollSpeedOnce(tabId) {
-    sendToAllFrames(tabId, { type: "get-speed-info" }, (info, commError) => {
-      handleSpeedInfo(tabId, info, commError);
+    sendToAllFrames(tabId, { type: "get-speed-info" }, (info, commError, frameId) => {
+      handleSpeedInfo(tabId, info, commError, frameId);
     });
   }
 
@@ -355,8 +449,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function speedPollLoop(tabId) {
     if (!speedPollActive) return;
-    sendToAllFrames(tabId, { type: "get-speed-info" }, (info, commError) => {
-      handleSpeedInfo(tabId, info, commError);
+    sendToAllFrames(tabId, { type: "get-speed-info" }, (info, commError, frameId) => {
+      handleSpeedInfo(tabId, info, commError, frameId);
       if (speedPollActive) {
         setTimeout(() => speedPollLoop(tabId), SPEED_POLL_INTERVAL_MS);
       }
@@ -365,8 +459,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function loadSpeed() {
     getActiveTabId((tabId) => {
-      sendToAllFrames(tabId, { type: "get-speed-info" }, (info, commError) => {
-        handleSpeedInfo(tabId, info, commError);
+      sendToAllFrames(tabId, { type: "get-speed-info" }, (info, commError, frameId) => {
+        handleSpeedInfo(tabId, info, commError, frameId);
         // El polling se arranca pase lo que pase (aunque todavía no se haya
         // encontrado nada), para que el estado se actualice apenas aparezca el
         // video.
@@ -401,8 +495,8 @@ document.addEventListener("DOMContentLoaded", () => {
       if (reason === "timeout") return "La página no respondió.";
       return "No se pudo saltar al vivo.";
     }
-    const jump =
-      res.jumpSeconds != null ? `${res.jumpSeconds.toFixed(1)} s` : "un tramo";
+    const jumpValue = finiteNumber(res.jumpSeconds, null);
+    const jump = jumpValue != null ? `${jumpValue.toFixed(1)} s` : "un tramo";
     return `Saltamos ${jump} hacia el vivo.`;
   }
 
@@ -411,7 +505,8 @@ document.addEventListener("DOMContentLoaded", () => {
     catchUpBtn.disabled = true;
     catchUpBtn.textContent = "Saltando…";
     getActiveTabId((tabId) => {
-      sendToAllFrames(tabId, { type: "catch-up-live" }, (res, commError) => {
+      const msg = { type: "catch-up-live" };
+      const handle = (res, commError) => {
         catchUpBtn.disabled = false;
         catchUpBtn.textContent = label;
         if (commError) {
@@ -420,7 +515,15 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         showTransientNote(catchUpMessage(res), 8000);
         pollSpeedOnce(tabId);
-      });
+      };
+      if (speedFrameId != null) {
+        sendToFrame(tabId, speedFrameId, msg, (res, err) => {
+          if (!err) return handle(res, false);
+          sendToAllFrames(tabId, msg, handle);
+        });
+      } else {
+        sendToAllFrames(tabId, msg, handle);
+      }
     });
   });
 
@@ -448,7 +551,6 @@ document.addEventListener("DOMContentLoaded", () => {
   let volumeValue = VOLUME_VALUE_DEFAULT;
   let volumeSliderDragging = false;
   let volumePollTimer = null;
-  let volumeTab = null;
   let volumeDomain = null;
   let volumeActive = false;
   let volumeBusy = false;
@@ -506,10 +608,14 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  function loadDomainMemory() {
-    if (!volumeTab || !volumeTab.url) return;
+  function loadDomainMemory(tab) {
+    if (!tab || !tab.url) {
+      volumeDomain = null;
+      volumeRestoreEl.hidden = true;
+      return;
+    }
     try {
-      const url = new URL(volumeTab.url);
+      const url = new URL(tab.url);
       if (url.protocol !== "http:" && url.protocol !== "https:") return;
       volumeDomain = url.hostname;
     } catch (e) {
@@ -544,40 +650,46 @@ document.addEventListener("DOMContentLoaded", () => {
     setVolumeStatus("Activando…");
     if (opts && opts.persist) persistDomainVolume(value);
 
-    if (!volumeTab) return;
-    const tabId = volumeTab.id;
-    chrome.runtime.sendMessage(
-      { target: "nds-background", type: "nds-volume-set", tabId, percent: value },
-      (res) => {
-        if (chrome.runtime.lastError) {
-          volumeActive = false;
-          setVolumeStatus("No se pudo hablar con la extensión.", true);
-          return;
-        }
-        if (!res || !res.ok) {
-          volumeActive = false;
-          if (res && res.reason === "busy") {
-            volumeBusy = true;
-            volumeBusyText =
-              res.message || "Otra extensión está capturando esta pestaña.";
-            setVolumeStatus(volumeBusyText, true);
-          } else {
-            setVolumeStatus(
-              (res && res.message) || "No se pudo activar la captura.",
-              true
-            );
-          }
-          return;
-        }
-        volumeActive = true;
-        volumeBusy = false;
-        const applied = res.percent != null ? res.percent : value;
-        renderVolumeValue(applied);
-        setVolumeStatus("Captura activa");
-        volumeStopEl.hidden = false;
-        chrome.action.setBadgeText({ text: String(applied), tabId });
+    getActiveTab((tab) => {
+      if (!tab) {
+        setVolumeStatus("No se pudo leer la pestaña.", true);
+        return;
       }
-    );
+      loadDomainMemory(tab);
+      const tabId = tab.id;
+      chrome.runtime.sendMessage(
+        { target: "nds-background", type: "nds-volume-set", tabId, percent: value },
+        (res) => {
+          if (chrome.runtime.lastError) {
+            volumeActive = false;
+            setVolumeStatus("No se pudo hablar con la extensión.", true);
+            return;
+          }
+          if (!res || !res.ok) {
+            volumeActive = false;
+            if (res && res.reason === "busy") {
+              volumeBusy = true;
+              volumeBusyText =
+                res.message || "Otra extensión está capturando esta pestaña.";
+              setVolumeStatus(volumeBusyText, true);
+            } else {
+              setVolumeStatus(
+                (res && res.message) || "No se pudo activar la captura.",
+                true
+              );
+            }
+            return;
+          }
+          volumeActive = true;
+          volumeBusy = false;
+          const applied = finiteNumber(res.percent, value);
+          renderVolumeValue(applied);
+          setVolumeStatus("Captura activa");
+          volumeStopEl.hidden = false;
+          chrome.action.setBadgeText({ text: String(applied), tabId });
+        }
+      );
+    });
   }
 
   function updateVolumeFromStatus(res) {
@@ -602,18 +714,20 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function pollVolumeStatus() {
-    if (!volumeTab) return;
-    chrome.runtime.sendMessage(
-      {
-        target: "nds-background",
-        type: "nds-volume-get",
-        tabId: volumeTab.id,
-      },
-      (res) => {
-        if (chrome.runtime.lastError) return;
-        updateVolumeFromStatus(res);
-      }
-    );
+    getActiveTab((tab) => {
+      if (!tab) return;
+      chrome.runtime.sendMessage(
+        {
+          target: "nds-background",
+          type: "nds-volume-get",
+          tabId: tab.id,
+        },
+        (res) => {
+          if (chrome.runtime.lastError) return;
+          updateVolumeFromStatus(res);
+        }
+      );
+    });
   }
 
   function loadVolume() {
@@ -622,8 +736,7 @@ document.addEventListener("DOMContentLoaded", () => {
         setVolumeStatus("No se pudo leer la pestaña.", true);
         return;
       }
-      volumeTab = tab;
-      loadDomainMemory();
+      loadDomainMemory(tab);
       chrome.runtime.sendMessage(
         {
           target: "nds-background",
@@ -691,18 +804,20 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   volumeStopEl.addEventListener("click", () => {
-    if (!volumeTab) return;
-    const tabId = volumeTab.id;
-    chrome.runtime.sendMessage(
-      { target: "nds-background", type: "nds-volume-stop", tabId },
-      () => {
-        volumeActive = false;
-        volumeBusy = false;
-        volumeStopEl.hidden = true;
-        setVolumeStatus("Sin captura");
-        chrome.action.setBadgeText({ text: "", tabId });
-      }
-    );
+    getActiveTab((tab) => {
+      if (!tab) return;
+      const tabId = tab.id;
+      chrome.runtime.sendMessage(
+        { target: "nds-background", type: "nds-volume-stop", tabId },
+        () => {
+          volumeActive = false;
+          volumeBusy = false;
+          volumeStopEl.hidden = true;
+          setVolumeStatus("Sin captura");
+          chrome.action.setBadgeText({ text: "", tabId });
+        }
+      );
+    });
   });
 
   // Teclas numéricas dentro del popup: 0 = 0%, 1 = 100%, ... 6 = 600%.

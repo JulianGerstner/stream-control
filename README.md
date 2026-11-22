@@ -10,7 +10,7 @@ motor que usa el sitio (hls.js, dash.js, Shaka, YouTube, Twitch, Netflix,
 Disney+ o HBO/Max) y usa su API cuando existe. Si no la encuentra, degrada sin
 romper la reproducción.
 
-Versión actual: **1.5.3**.
+Versión actual: **1.5.4**.
 
 ---
 
@@ -361,6 +361,9 @@ Condiciones y límites:
   disponible.
 - Si recargás la extensión o Chrome corta el stream, la captura termina y hay que
   volver a activarla.
+- **Si la pestaña navega a otra URL, la captura se detiene sola**, aunque el
+  `tabId` sea el mismo. Hay que volver a activarla desde el popup: así un video
+  no sigue capturando el audio si después abrís una llamada en esa pestaña.
 
 ---
 
@@ -401,6 +404,31 @@ falta. Ese texto es la primera pista para saber si el sitio cambió el player.
 
 La extensión **no envía datos a ningún servidor**, no usa analíticas y no carga
 código remoto. Todo el procesamiento es local.
+
+---
+
+## Seguridad y mensajería
+
+- El **popup es el único** que puede pedir captura de audio al service worker.
+  Se valida el emisor (`sender.id` y URL del popup) antes de aceptar un comando
+  de `nds-volume-set`, `stop` o `get`.
+- El popup usa la **pestaña activa real** para el volumen: si cambiás de pestaña
+  con el popup abierto, el slider no silencia la pestaña anterior.
+- Cada pedido al reproductor lleva un **`requestId`**. El puente ignora
+  respuestas de otros pedidos y los comandos de velocidad/calidad se envían solo
+  al frame que reportó tener el reproductor. Un iframe de terceros no puede
+  inducir a la extensión a cambiar la calidad del frame principal.
+- Los datos que vienen de una página (delay, buffer, calidades, avisos) se
+  validan por tipo y se limitan en tamaño antes de mostrarse: un valor inesperado
+  no rompe el popup.
+- El `tabId` se comprueba contra Chrome y debe ser http(s); el offscreen valida
+  el emisor, exige un `tabId` entero y un `streamId` no vacío, y no reutiliza un
+  `streamId` ya usado.
+- Los cambios de calidad en Disney+ que terminan en recarga se **agrupan**: como
+  máximo una recarga cada 10 segundos.
+
+No hay `externally_connectable`, así que un sitio web no puede llamar directamente
+a la API interna de la extensión. Estas comprobaciones son defensa en profundidad.
 
 ---
 

@@ -1455,6 +1455,23 @@
     }
   }
 
+  // Un script de la página puede despachar qs-set-quality muchas veces por
+  // segundo. Agrupamos las recargas: como máximo una cada 10 s, y varias
+  // elecciones seguidas se resuelven en una sola recarga.
+  let disneyReloadTimer = null;
+  let disneyLastReloadAt = 0;
+  function scheduleDisneyReload() {
+    if (disneyReloadTimer) return;
+    const wait = Math.max(0, 10000 - (Date.now() - disneyLastReloadAt));
+    disneyReloadTimer = setTimeout(() => {
+      disneyReloadTimer = null;
+      disneyLastReloadAt = Date.now();
+      try {
+        location.reload();
+      } catch (e) {}
+    }, wait);
+  }
+
   function setDisneyQuality(dp, id) {
     // Variante exacta (altura + bitrate + codec): fija ese bitrate y deja que
     // el player elija el audio. Se guarda como string ("v:...") para no
@@ -1471,9 +1488,7 @@
         sessionStorage.removeItem(DISNEY_UNCAP_KEY);
       } catch (e) {}
       if (!changed) return;
-      try {
-        location.reload();
-      } catch (e) {}
+      scheduleDisneyReload();
       return;
     }
 
@@ -1492,9 +1507,7 @@
     if (!changed) return;
     // El master se pide una sola vez por sesión: hay que recrearla. La
     // preferencia queda en sessionStorage, así que sobrevive a la recarga.
-    try {
-      location.reload();
-    } catch (e) {}
+    scheduleDisneyReload();
   }
 
   // Diagnóstico rápido desde la consola: __qsDisneyDebug()
@@ -2016,6 +2029,8 @@
   // window.IVSPlayer, envolvemos create() en document_start para quedarnos
   // con la instancia real, sin depender del árbol de React.
   let twitchCapturedIvs = null;
+  // Solo Twitch usa este SDK: no parcheamos un global ajeno en otros sitios.
+  if (isTwitchHost()) {
   try {
     let ivsRef = window.IVSPlayer;
     const wrapIvs = (obj) => {
@@ -2046,6 +2061,7 @@
       },
     });
   } catch (e) {}
+  }
 
   function twitchLooksLikePlayer(obj) {
     if (!obj || (typeof obj !== "object" && typeof obj !== "function"))
@@ -6119,7 +6135,8 @@
     }
   } catch (e) {}
 
-  window.addEventListener("qs-get-speed-info", () => {
+  window.addEventListener("qs-get-speed-info", (event) => {
+    const requestId = event && event.detail && event.detail.requestId;
     let detail;
     try {
       currentPlayer = getActivePlayer();
@@ -6158,6 +6175,7 @@
     } catch (e) {
       detail = { found: false, error: true };
     }
+    detail.requestId = requestId;
     window.dispatchEvent(
       new CustomEvent("qs-speed-info-response", { detail })
     );
@@ -6187,7 +6205,8 @@
     };
   };
 
-  window.addEventListener("qs-set-speed", (e) => {
+  window.addEventListener("qs-set-speed", (event) => {
+    const requestId = event && event.detail && event.detail.requestId;
     let detail;
     try {
       currentPlayer = getActivePlayer();
@@ -6195,8 +6214,8 @@
       if (!video) {
         detail = { ok: false, reason: "no-video" };
       } else {
-        const { rate } = e.detail;
-        if (typeof rate === "number") {
+        const { rate } = event.detail;
+        if (typeof rate === "number" && Number.isFinite(rate)) {
           abortStartupRamp("velocidad-manual");
           // Elección explícita del usuario: limpia cualquier "release" previo
           // y reafirma la velocidad con el ritmo tranquilo de v4.
@@ -6216,6 +6235,7 @@
     } catch (err) {
       detail = { ok: false, reason: "error" };
     }
+    detail.requestId = requestId;
     window.dispatchEvent(
       new CustomEvent("qs-set-speed-response", { detail })
     );
@@ -6224,7 +6244,8 @@
   // "Ponerse al día": un solo salto hacia adelante dentro del buffer, para
   // recortar el atraso del vivo sin pelear con el control de latencia del
   // player. Responde después de ~450 ms para poder informar cómo quedó.
-  window.addEventListener("qs-catch-up-live", () => {
+  window.addEventListener("qs-catch-up-live", (event) => {
+    const requestId = event && event.detail && event.detail.requestId;
     let video = null;
     let result = { ok: false, reason: "no-video" };
     try {
@@ -6240,6 +6261,7 @@
       // los frames aunque el salto no se haya podido hacer (por ejemplo
       // "already-live"), en vez de quedarse con el "no-video" de otro frame.
       result.found = !!video;
+      result.requestId = requestId;
       if (video && result.ok) {
         try {
           // Si el salto no quedó cerca de donde pedimos (por ejemplo, porque
@@ -6334,10 +6356,12 @@
 
   // El popup persiste la preferencia en chrome.storage; bridge.js la traduce
   // a este evento porque page-hook corre en el MAIN world y no ve chrome.*.
-  window.addEventListener("qs-request-qualities", () => {
+  window.addEventListener("qs-request-qualities", (event) => {
+    const requestId = event && event.detail && event.detail.requestId;
     const send = (detail) => {
+      const payload = Object.assign({}, detail, { requestId });
       window.dispatchEvent(
-        new CustomEvent("qs-qualities-response", { detail })
+        new CustomEvent("qs-qualities-response", { detail: payload })
       );
     };
     let detail;

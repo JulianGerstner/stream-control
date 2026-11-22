@@ -15,6 +15,23 @@ const VOLUME_VALUE_MAX = 600;
 
 // tabId -> { ctx, source, gain, stream, percent }
 const audioStates = new Map();
+// Un streamId solo puede abrir un AudioContext. Si un contexto comprometido
+// reenvía el mismo id con otro tabId, lo descartamos en vez de crear capturas
+// infinitas.
+const usedStreamIds = new Set();
+const MAX_AUDIO_STATES = 32;
+
+function isFromBackground(sender) {
+  return !!(
+    sender &&
+    sender.id === chrome.runtime.id &&
+    !sender.tab
+  );
+}
+
+function validTabId(tabId) {
+  return Number.isInteger(tabId) && tabId >= 0;
+}
 
 function clampVolume(value) {
   const n = Number(value);
@@ -23,7 +40,9 @@ function clampVolume(value) {
 }
 
 async function getTabStream(streamId) {
-  if (!streamId) throw new Error("falta el streamId de la pestaña");
+  if (typeof streamId !== "string" || !streamId.trim()) {
+    throw new Error("falta el streamId de la pestaña");
+  }
   return navigator.mediaDevices.getUserMedia({
     audio: {
       mandatory: {
@@ -87,8 +106,10 @@ function stopTab(tabId) {
   return true;
 }
 
-async function handleMessage(msg) {
+async function handleMessage(msg, sender) {
   if (!msg || msg.target !== OFFSCREEN_TARGET) return undefined;
+  if (!isFromBackground(sender)) return undefined;
+  if (!validTabId(msg.tabId)) return { ok: false, reason: "invalid-tab" };
 
   if (msg.type === "nds-offscreen-get") {
     const state = audioStates.get(msg.tabId);
@@ -120,8 +141,21 @@ async function handleMessage(msg) {
       };
     }
 
+    // Solo el background entrega un streamId, y lo hace una vez por captura.
+    if (
+      typeof msg.streamId !== "string" ||
+      !msg.streamId.trim() ||
+      usedStreamIds.has(msg.streamId)
+    ) {
+      return { ok: false, reason: "invalid-stream", percent };
+    }
+    if (audioStates.size >= MAX_AUDIO_STATES) {
+      return { ok: false, reason: "too-many-tabs", percent };
+    }
+
     try {
       const stream = await getTabStream(msg.streamId);
+      usedStreamIds.add(msg.streamId);
       const state = connectStream(tabId, stream, percent);
       return {
         ok: true,
@@ -150,7 +184,7 @@ async function handleMessage(msg) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.target !== OFFSCREEN_TARGET) return false;
-  handleMessage(msg)
+  handleMessage(msg, sender)
     .then((result) => {
       sendResponse(result === undefined ? { ok: false, reason: "unknown" } : result);
     })
