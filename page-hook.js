@@ -6352,6 +6352,277 @@
       .forEach(addPreconnectHint);
   }
 
+  // --- Cartel "¿Sigues viendo?" de YouTube / YouTube Music -----------------
+  // Después de un rato sin interacción, YouTube pausa y muestra un diálogo para
+  // confirmar que seguimos ahí. No hay opción oficial para desactivarlo: lo que
+  // hacemos es detectarlo y confirmarlo apenas aparece, y reanudar si el video
+  // quedó pausado. Si el sitio cambia el formato, no encontramos nada y no
+  // hacemos nada (degrada silenciosamente).
+  const QS_STILL_KEY = "qs-still-watching";
+  const qsStill = {
+    enabled: false,
+    prompts: 0,
+    clicks: 0,
+    resumes: 0,
+    lastDialog: null,
+    lastError: null,
+  };
+  let qsStillInstalled = false;
+  let qsStillScanTimer = null;
+
+  // Opt-out: qs-still-watching = 0 | off | false ( igual que la rampa ).
+  function qsStillDisabled() {
+    try {
+      const value = localStorage.getItem(QS_STILL_KEY);
+      return value === "0" || value === "off" || value === "false";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function qsStillIsYouTube() {
+    return /(^|\.)youtube\.com$/i.test(location.hostname);
+  }
+
+  const QS_STILL_DIALOG_SEL = [
+    "ytmusic-you-there-renderer",
+    "yt-confirm-dialog-renderer",
+    "ytd-confirm-dialog-renderer",
+    "tp-yt-paper-dialog",
+    "paper-dialog",
+    '[role="dialog"]',
+  ].join(",");
+
+  const QS_STILL_PROMPT_RE =
+    /video paused|still watching|still listening|continue watching|sigues viendo|seguir viendo|continuar viendo|sigues escuchando|seguir escuchando|continuar escuchando|sigue sonando|sigues ah[ií]/i;
+  const QS_STILL_YES_RE =
+    /^(s[ií](?:,|\s|$)|yes|ok|okay|aceptar|continue|continuar|keep watching|seguir viendo|seguir escuchando|reanudar|resume|confirmar)/i;
+  const QS_STILL_NO_RE =
+    /^(no|cancel|cancelar|cerrar|close|stop|detener|not now|ahora no|rechazar)/i;
+
+  function qsStillText(el) {
+    if (!el) return "";
+    let text = "";
+    try {
+      text = el.innerText || el.textContent || "";
+    } catch (e) {}
+    try {
+      text += " " + (el.getAttribute("aria-label") || "");
+      text += " " + (el.getAttribute("title") || "");
+    } catch (e) {}
+    return String(text).replace(/\s+/g, " ").trim();
+  }
+
+  function qsStillVisible(el) {
+    try {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) return true;
+      return !!(el.getClientRects && el.getClientRects().length);
+    } catch (e) {
+      return true;
+    }
+  }
+
+  // Los diálogos viven dentro de Shadow DOM, a veces cerrado. El registro de
+  // attachShadow del arranque nos da esos roots aunque sean closed.
+  function qsStillDeepQuery(root, selector, out, depth) {
+    if (!root || depth > 8 || out.length > 40) return out;
+    let found = [];
+    let all = [];
+    try {
+      found = Array.prototype.slice.call(root.querySelectorAll(selector));
+    } catch (e) {}
+    found.forEach((el) => out.push(el));
+    try {
+      all = Array.prototype.slice.call(root.querySelectorAll("*"));
+    } catch (e) {
+      return out;
+    }
+    all.forEach((el) => {
+      let shadow = null;
+      try {
+        shadow = el.shadowRoot || __qsShadowRegistry.get(el);
+      } catch (e) {}
+      if (shadow) qsStillDeepQuery(shadow, selector, out, depth + 1);
+    });
+    return out;
+  }
+
+  function qsStillConfirmButton(dialog) {
+    const buttons = qsStillDeepQuery(
+      dialog,
+      '#confirm-button,#button,button,tp-yt-paper-button,paper-button,[role="button"],ytd-button-renderer',
+      [],
+      0
+    );
+    const unique = [];
+    buttons.forEach((b) => {
+      if (unique.indexOf(b) === -1 && qsStillVisible(b)) unique.push(b);
+    });
+    if (!unique.length) return null;
+
+    // IDs que YouTube / YouTube Music usan para el botón de confirmación.
+    const byId = unique.find(
+      (b) => b.id === "confirm-button" || b.id === "button"
+    );
+    if (byId) return byId;
+
+    const clean = (t) => t.replace(/[.!?…]+$/, "").trim();
+    const yes = unique.find((b) => QS_STILL_YES_RE.test(clean(qsStillText(b))));
+    if (yes) return yes;
+
+    // Sin texto reconocible: el último botón visible suele ser el primario.
+    // Nunca elegimos uno que diga "No" / "Cancelar".
+    for (let i = unique.length - 1; i >= 0; i--) {
+      if (!QS_STILL_NO_RE.test(clean(qsStillText(unique[i])))) return unique[i];
+    }
+    return null;
+  }
+
+  function qsStillResume() {
+    let video = null;
+    try {
+      currentPlayer = getActivePlayer();
+      video = resolveVideoElement(currentPlayer);
+    } catch (e) {}
+    if (!video || !isRealMediaElement(video)) {
+      const videos = [];
+      try {
+        collectVideosDeep(document, videos);
+      } catch (e) {}
+      video = videos.find((v) => v.currentSrc || v.src) || null;
+    }
+    if (!video || !video.paused || video.ended) return;
+
+    try {
+      const p = video.play();
+      if (p && typeof p.catch === "function") p.catch(() => {});
+      qsStill.resumes++;
+    } catch (e) {
+      qsStill.lastError = String(e);
+    }
+
+    // Si play() no prendió, probamos el botón del reproductor. Solo si el video
+    // sigue pausado: nunca queremos pausar lo que estaba sonando.
+    setTimeout(() => {
+      let v = video;
+      try {
+        v = resolveVideoElement(getActivePlayer()) || video;
+      } catch (e) {}
+      if (!v || !v.paused || v.ended) return;
+      const buttons = qsStillDeepQuery(
+        document,
+        ".ytp-play-button,#play-pause-button,ytmusic-player-bar button",
+        [],
+        0
+      );
+      const play = buttons.find(
+        (b) => qsStillVisible(b) && /play|reproducir|reanudar/i.test(qsStillText(b))
+      );
+      if (play) {
+        try {
+          play.click();
+          qsStill.resumes++;
+        } catch (e) {}
+      }
+    }, 700);
+  }
+
+  function qsStillScan(root) {
+    if (qsStillDisabled()) return;
+    const dialogs = qsStillDeepQuery(
+      root || document,
+      QS_STILL_DIALOG_SEL,
+      [],
+      0
+    );
+    dialogs.forEach((dialog) => {
+      if (!qsStillVisible(dialog)) return;
+      const text = qsStillText(dialog);
+      if (!QS_STILL_PROMPT_RE.test(text)) return;
+      const now = Date.now();
+      // Un mismo diálogo no se confirma dos veces: evita bucles si YouTube lo
+      // mantiene en el DOM unos segundos después del click.
+      if (dialog.__qsStillHandledAt && now - dialog.__qsStillHandledAt < 10000) {
+        return;
+      }
+      dialog.__qsStillHandledAt = now;
+      qsStill.prompts++;
+      qsStill.lastDialog = text.slice(0, 160);
+      const button = qsStillConfirmButton(dialog);
+      if (!button) return;
+      try {
+        button.click();
+        qsStill.clicks++;
+        qsStillResume();
+      } catch (e) {
+        qsStill.lastError = String(e);
+      }
+    });
+  }
+
+  function qsStillScheduleScan() {
+    if (qsStillScanTimer) return;
+    qsStillScanTimer = setTimeout(() => {
+      qsStillScanTimer = null;
+      qsStillScan();
+    }, 120);
+  }
+
+  function qsStillInstall() {
+    if (qsStillInstalled) return;
+    qsStillInstalled = true;
+    // Solo el frame principal y solo YouTube / YouTube Music.
+    if (!qsStillIsYouTube() || window.top !== window || qsStillDisabled()) return;
+    qsStill.enabled = true;
+
+    const start = () => {
+      qsStillScan();
+      // Red de seguridad: el MutationObserver se pierde si el sitio reemplaza
+      // el nodo observado o si el diálogo se crea dentro de un shadow root.
+      setInterval(qsStillScan, 2500);
+      try {
+        const observer = new MutationObserver((mutations) => {
+          for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+              if (!node || node.nodeType !== 1) continue;
+              try {
+                if (
+                  node.matches(QS_STILL_DIALOG_SEL) ||
+                  node.querySelector(QS_STILL_DIALOG_SEL)
+                ) {
+                  qsStillScheduleScan();
+                  break;
+                }
+              } catch (e) {}
+            }
+          }
+        });
+        observer.observe(document.documentElement || document, {
+          childList: true,
+          subtree: true,
+        });
+      } catch (e) {
+        qsStill.lastError = String(e);
+      }
+    };
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", start, { once: true });
+    } else {
+      start();
+    }
+  }
+
+  // Diagnóstico: __qsStillWatchingDebug()
+  window.__qsStillWatchingDebug = () =>
+    Object.assign({}, qsStill, {
+      host: location.hostname,
+      optedOut: qsStillDisabled(),
+    });
+
+  qsStillInstall();
+
   // --- Puente de comunicación con el content script aislado (bridge.js) ---
 
   // El popup persiste la preferencia en chrome.storage; bridge.js la traduce

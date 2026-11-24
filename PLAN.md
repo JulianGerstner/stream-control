@@ -16,6 +16,11 @@ otras plataformas.
 > el sondeo 1080p. Además, las calidades se muestran en un **desplegable**
 > (`<select>`) en todas las plataformas. Ver sección 6.1.
 
+> **Nota 1.5.5**: se agregó el cierre automático del cartel "¿Sigues viendo?"
+> de **YouTube / YouTube Music**: se confirma apenas aparece y se reanuda el
+> video si quedó pausado. Solo en esos hosts, con opt-out
+> `localStorage.setItem("qs-still-watching","off")`. Ver sección 18.
+
 > **Nota 1.5.4**: corrección de los 6 hallazgos de seguridad priorizados. La
 > captura de audio se detiene al navegar (aunque no cambie el `tabId`), el popup
 > usa la pestaña activa real, los mensajes llevan `requestId` y los comandos van
@@ -876,3 +881,47 @@ red saliente ni credenciales). Se corrigieron los 6 puntos priorizados:
    `sender`, `tabId`, `streamId`, navegación y tipos.
 6. Regresión: `test-ramp.js` (10 PASS), `test-kick-cog.js`,
    `test-kick-wrong-menu.js`, `test-kick-dom2.js` y `check-ids.js`.
+
+---
+
+## 18. Cartel "¿Sigues viendo?" en YouTube / YouTube Music
+
+Pedido del usuario: que no aparezca el cartel que pausa el video después de un
+rato sin interacción. Se eligió **auto-cerrar y reanudar**, sin interruptor en el
+popup.
+
+Implementación en `page-hook.js` (bloque autónomo, solo `youtube.com` incluido
+`music.youtube.com`, solo frame principal):
+
+1. `qsStillDeepQuery()` busca los diálogos (`ytmusic-you-there-renderer`,
+   `yt-confirm-dialog-renderer`, `ytd-confirm-dialog-renderer`,
+   `tp-yt-paper-dialog`, `paper-dialog`, `[role="dialog"]`) recorriendo también
+   Shadow DOM abiertos y los cerrados registrados por el hook de `attachShadow`.
+2. `QS_STILL_PROMPT_RE` filtra por texto del cartel (inglés y español, "watching"
+   y "listening"). Otros diálogos se ignoran.
+3. `qsStillConfirmButton()` elige el botón: primero `#confirm-button` / `#button`
+   (los IDs que usan YouTube y YTM), después texto afirmativo
+   (`Sí`, `Sí, seguir viendo`, `Yes`, `Continue`, ...) y por último el último
+   botón visible que no diga `No`/`Cancelar`.
+4. Después del click, `qsStillResume()` llama a `video.play()` y, si sigue
+   pausado 700 ms después, toca el botón de play del reproductor. Nunca toca un
+   video que ya esté sonando.
+5. Un mismo diálogo se marca por 10 s para evitar confirmarlo dos veces.
+   `MutationObserver` con debounce de 120 ms + escaneo de seguridad cada 2,5 s.
+6. Opt-out: `localStorage["qs-still-watching"] = 0|off|false`, igual que la
+   rampa. Diagnóstico: `__qsStillWatchingDebug()`.
+
+Degrada silenciosamente: si el sitio cambia los selectores, no hace nada.
+
+Prueba: `test-still-watching.js` extrae el bloque real y lo corre con un DOM
+mock (11 PASS): YouTube, YouTube Music, español, botón "No", otro host, opt-out,
+otro diálogo y video ya en reproducción. Regresión: `test-ramp.js`,
+`test-security.js` y `check-ids.js` siguen pasando.
+
+Archivos tocados en v1.5.5:
+
+- `page-hook.js` — bloque del confirmador del cartel (detección con Shadow DOM,
+  elección del botón, reanudación, opt-out y `__qsStillWatchingDebug()`).
+- `manifest.json` — versión `1.5.5`.
+- `README.md` — sección "Cartel ¿Sigues viendo?" y fila de diagnóstico.
+- `PLAN.md` — esta sección.

@@ -10,7 +10,7 @@ motor que usa el sitio (hls.js, dash.js, Shaka, YouTube, Twitch, Netflix,
 Disney+ o HBO/Max) y usa su API cuando existe. Si no la encuentra, degrada sin
 romper la reproducción.
 
-Versión actual: **1.5.4**.
+Versión actual: **1.5.5**.
 
 ---
 
@@ -152,6 +152,30 @@ delante, avisa que ya estás al día.
 Es la forma recomendada de recortar atraso sin pelear con el control de latencia
 del reproductor. Cada salto puede dejar un instante de audio cortado mientras se
 rellena el buffer, igual que el botón nativo de "ir al vivo".
+
+### Cartel "¿Sigues viendo?" (YouTube / YouTube Music)
+
+YouTube pausa la reproducción después de un rato sin interacción y muestra un
+diálogo para confirmar que seguimos ahí. La extensión lo detecta y lo confirma en
+cuanto aparece (normalmente en menos de un segundo). Si el video quedó pausado,
+además lo reanuda.
+
+- Actúa **solo en `youtube.com` y `music.youtube.com`**, en el frame principal.
+- No reanuda nada que hayas pausado vos: solo interviene cuando apareció el
+  cartel.
+- Si YouTube cambia el diálogo, no encuentra nada y sigue igual: no rompe la
+  reproducción.
+- Para desactivarlo, en la consola de la pestaña:
+
+  ```js
+  localStorage.setItem("qs-still-watching", "off")
+  ```
+
+  Con `0`, `off` o `false` deja de actuar. Para volver:
+  `localStorage.removeItem("qs-still-watching")`.
+
+- Diagnóstico: `__qsStillWatchingDebug()` muestra si está activo, cuántos carteles
+  confirmó, cuántas reanudaciones hizo y el último error.
 
 ### Limitaciones
 
@@ -384,6 +408,7 @@ Con la consola de DevTools abierta en la página del video:
 | `__qsKickProbe()` | videos, botones, menús y opciones que ve el adapter |
 | `__qsKickProbe(true)` | intenta abrir el menú y reporta en qué paso falló |
 | `__qsYouTubeDebug()` | players de YouTube, calidades y formatos reales |
+| `__qsStillWatchingDebug()` | estado del confirmador del cartel "¿Sigues viendo?" |
 
 El popup muestra un aviso corto en las plataformas experimentales. Si el
 selector no encuentra lo que necesita, agrega el diagnóstico de la pieza que
