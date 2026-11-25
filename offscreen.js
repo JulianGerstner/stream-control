@@ -19,7 +19,20 @@ const audioStates = new Map();
 // reenvía el mismo id con otro tabId, lo descartamos en vez de crear capturas
 // infinitas.
 const usedStreamIds = new Set();
+// FIFO acotado: el Set por sí solo crecía con cada captura aunque la pestaña
+// ya se hubiera soltado. 64 ids alcanzan con creces para una sesión normal.
+const usedStreamIdOrder = [];
+const MAX_USED_STREAM_IDS = 64;
 const MAX_AUDIO_STATES = 32;
+
+function rememberStreamId(streamId) {
+  usedStreamIds.add(streamId);
+  usedStreamIdOrder.push(streamId);
+  while (usedStreamIdOrder.length > MAX_USED_STREAM_IDS) {
+    const old = usedStreamIdOrder.shift();
+    usedStreamIds.delete(old);
+  }
+}
 
 function isFromBackground(sender) {
   return !!(
@@ -62,7 +75,15 @@ function connectStream(tabId, stream, percent) {
   source.connect(gain);
   gain.connect(ctx.destination);
 
-  const state = { ctx, source, gain, stream, percent: clampVolume(percent) };
+  const cleanups = [];
+  const state = {
+    ctx,
+    source,
+    gain,
+    stream,
+    percent: clampVolume(percent),
+    cleanups,
+  };
   audioStates.set(tabId, state);
 
   // El contexto puede arrancar suspendido por la política de autoplay. En un
@@ -73,15 +94,18 @@ function connectStream(tabId, stream, percent) {
   };
   resume();
   ctx.addEventListener("statechange", resume);
+  cleanups.push(() => ctx.removeEventListener("statechange", resume));
 
   // Si la captura se corta (por ejemplo, porque el usuario recargó la
   // extensión o Chrome cerró el stream), liberamos todo para no dejar un
   // estado fantasma que diga "capturando" cuando ya no hay audio.
   const track = stream.getAudioTracks()[0];
   if (track) {
-    track.addEventListener("ended", () => {
+    const onEnded = () => {
       if (audioStates.get(tabId) === state) stopTab(tabId);
-    });
+    };
+    track.addEventListener("ended", onEnded);
+    cleanups.push(() => track.removeEventListener("ended", onEnded));
   }
 
   return state;
@@ -91,6 +115,13 @@ function stopTab(tabId) {
   const state = audioStates.get(tabId);
   if (!state) return false;
   audioStates.delete(tabId);
+  if (state.cleanups) {
+    state.cleanups.forEach((cleanup) => {
+      try {
+        cleanup();
+      } catch (e) {}
+    });
+  }
   try {
     state.source.disconnect();
   } catch (e) {}
@@ -155,7 +186,7 @@ async function handleMessage(msg, sender) {
 
     try {
       const stream = await getTabStream(msg.streamId);
-      usedStreamIds.add(msg.streamId);
+      rememberStreamId(msg.streamId);
       const state = connectStream(tabId, stream, percent);
       return {
         ok: true,

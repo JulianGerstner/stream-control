@@ -10,7 +10,7 @@ motor que usa el sitio (hls.js, dash.js, Shaka, YouTube, Twitch, Netflix,
 Disney+ o HBO/Max) y usa su API cuando existe. Si no la encuentra, degrada sin
 romper la reproducción.
 
-Versión actual: **1.5.5**.
+Versión actual: **1.5.6**.
 
 ---
 

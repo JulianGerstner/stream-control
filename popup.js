@@ -268,6 +268,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   let speedSliderDragging = false;
   let speedPollActive = false;
+  // El arrastre dispara decenas de eventos input por segundo. Agrupamos los
+  // envíos y siempre mandamos el valor final en change.
+  let speedSliderTimer = null;
+  let speedSliderPending = null;
   // Mensaje temporal que gana sobre el aviso contextual del poll (que se
   // recalcula cada 250 ms y si no, lo pisaría al instante).
   let transientNote = null;
@@ -352,6 +356,17 @@ document.addEventListener("DOMContentLoaded", () => {
     } else {
       sendToAllFrames(tabId, msg, handle);
     }
+  }
+
+  function flushSpeedSlider() {
+    if (speedSliderPending == null) return;
+    const rate = speedSliderPending;
+    speedSliderPending = null;
+    if (speedSliderTimer != null) {
+      clearTimeout(speedSliderTimer);
+      speedSliderTimer = null;
+    }
+    getActiveTabId((tabId) => sendSetSpeed(tabId, rate));
   }
 
   function buildSpeedButtons() {
@@ -449,12 +464,35 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function speedPollLoop(tabId) {
     if (!speedPollActive) return;
-    sendToAllFrames(tabId, { type: "get-speed-info" }, (info, commError, frameId) => {
+    const deliver = (info, commError, frameId) => {
       handleSpeedInfo(tabId, info, commError, frameId);
       if (speedPollActive) {
         setTimeout(() => speedPollLoop(tabId), SPEED_POLL_INTERVAL_MS);
       }
-    });
+    };
+
+    // Cuando ya sabemos qué frame tiene el reproductor, consultamos solo ahí:
+    // antes cada 250 ms llegábamos a todos los iframes (chat, ads, embeddings)
+    // y cada uno escaneaba su DOM aunque no tuviera video.
+    if (speedFrameId != null) {
+      sendToFrame(
+        tabId,
+        speedFrameId,
+        { type: "get-speed-info" },
+        (res, commError, frameId) => {
+          if (!commError && res && res.found === true) {
+            deliver(res, false, frameId);
+            return;
+          }
+          // El player pudo mudarse de frame o el frame pudo desaparecer.
+          speedFrameId = null;
+          sendToAllFrames(tabId, { type: "get-speed-info" }, deliver);
+        }
+      );
+      return;
+    }
+
+    sendToAllFrames(tabId, { type: "get-speed-info" }, deliver);
   }
 
   function loadSpeed() {
@@ -476,11 +514,18 @@ document.addEventListener("DOMContentLoaded", () => {
     speedSliderDragging = true;
     const rate = parseInt(speedSliderEl.value, 10) / 100;
     speedStatusEl.textContent = `${rate.toFixed(2)}×`;
-    getActiveTabId((tabId) => sendSetSpeed(tabId, rate));
+    speedSliderPending = rate;
+    if (speedSliderTimer == null) {
+      speedSliderTimer = setTimeout(() => {
+        speedSliderTimer = null;
+        flushSpeedSlider();
+      }, 100);
+    }
   });
 
   speedSliderEl.addEventListener("change", () => {
     speedSliderDragging = false;
+    flushSpeedSlider();
   });
 
   const catchUpBtn = document.getElementById("catch-up-live");
@@ -556,6 +601,10 @@ document.addEventListener("DOMContentLoaded", () => {
   let volumeBusy = false;
   let volumeBusyText = "";
   let volumeLastWheelAt = 0;
+  // Igual que en velocidad: el input llega muy seguido al arrastrar. El
+  // etiquetado se actualiza enseguida y el mensaje se agrupa.
+  let volumeSliderTimer = null;
+  let volumeSliderPending = null;
 
   function clampVolume(value) {
     const n = Number(value);
@@ -640,6 +689,17 @@ document.addEventListener("DOMContentLoaded", () => {
   function setVolumeStatus(text, isError) {
     volumeStatusEl.textContent = text;
     volumeStatusEl.classList.toggle("error", !!isError);
+  }
+
+  function flushVolumeSlider() {
+    if (volumeSliderPending == null) return;
+    const percent = volumeSliderPending;
+    volumeSliderPending = null;
+    if (volumeSliderTimer != null) {
+      clearTimeout(volumeSliderTimer);
+      volumeSliderTimer = null;
+    }
+    applyVolume(percent);
   }
 
   function applyVolume(percent, opts) {
@@ -760,11 +820,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
   volumeSliderEl.addEventListener("input", () => {
     volumeSliderDragging = true;
-    applyVolume(volumePercentAt(volumeSliderEl.value));
+    const percent = volumePercentAt(volumeSliderEl.value);
+    renderVolumeValue(percent);
+    volumeRestoreEl.hidden = true;
+    volumeSliderPending = percent;
+    if (volumeSliderTimer == null) {
+      volumeSliderTimer = setTimeout(() => {
+        volumeSliderTimer = null;
+        flushVolumeSlider();
+      }, 120);
+    }
   });
 
   volumeSliderEl.addEventListener("change", () => {
     volumeSliderDragging = false;
+    flushVolumeSlider();
     persistDomainVolume(volumeValue);
   });
 
@@ -847,6 +917,8 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("unload", () => {
     speedPollActive = false;
     if (volumePollTimer) clearInterval(volumePollTimer);
+    if (speedSliderTimer) clearTimeout(speedSliderTimer);
+    if (volumeSliderTimer) clearTimeout(volumeSliderTimer);
   });
 
   refreshBtn.addEventListener("click", () => {

@@ -14,11 +14,16 @@
   // document_start, así que llegamos primero) y nos guardamos una
   // referencia igual, sin importar el modo que hayan pedido.
   const __qsShadowRegistry = new WeakMap();
+  // Contador barato para saber si vale la pena buscar videos dentro de shadow
+  // roots. Evita escaneos profundos en frames de chat/ads que no tienen ningún
+  // reproductor (y que antes pagaban el costo 4 veces por segundo).
+  let __qsShadowRootCount = 0;
   try {
     const originalAttachShadow = Element.prototype.attachShadow;
     Element.prototype.attachShadow = function (init) {
       const root = originalAttachShadow.call(this, init);
       __qsShadowRegistry.set(this, root);
+      __qsShadowRootCount++;
       return root;
     };
   } catch (e) {}
@@ -271,17 +276,35 @@
 
   // Chequeo periódico "por las dudas": algunos reproductores reinician su
   // configuración al refrescar el manifest (streams en vivo) sin disparar
-  // ningún evento que podamos escuchar.
-  setInterval(() => {
-    lockedInstances.forEach((lock, instance) => {
-      if (lock.type === "shaka") reassertShakaLock(instance);
-      if (lock.type === "hls" && instance.currentLevel !== lock.id) {
-        try {
-          instance.currentLevel = lock.id;
-        } catch (e) {}
+  // ningún evento que podamos escuchar. El timer se crea solo mientras haya
+  // una calidad bloqueada: en idle no despierta nada, en cada frame.
+  let lockCheckTimer = null;
+
+  function ensureLockCheckTimer() {
+    if (lockCheckTimer != null || lockedInstances.size === 0) return;
+    lockCheckTimer = setInterval(() => {
+      if (lockedInstances.size === 0) {
+        clearInterval(lockCheckTimer);
+        lockCheckTimer = null;
+        return;
       }
-    });
-  }, 4000);
+      lockedInstances.forEach((lock, instance) => {
+        if (lock.type === "shaka") reassertShakaLock(instance);
+        if (lock.type === "hls" && instance.currentLevel !== lock.id) {
+          try {
+            instance.currentLevel = lock.id;
+          } catch (e) {}
+        }
+      });
+    }, 4000);
+  }
+
+  function releaseLockCheckTimer() {
+    if (lockCheckTimer != null && lockedInstances.size === 0) {
+      clearInterval(lockCheckTimer);
+      lockCheckTimer = null;
+    }
+  }
 
   // --- Detección por "duck typing" (miramos qué métodos tiene el objeto) ---
 
@@ -4484,9 +4507,11 @@
     if (player.type === "hls") {
       if (id === -1) {
         lockedInstances.delete(player.instance);
+        releaseLockCheckTimer();
         player.instance.currentLevel = -1; // vuelve a automático
       } else {
         lockedInstances.set(player.instance, { type: "hls", id });
+        ensureLockCheckTimer();
         attachHlsGuards(player.instance);
         player.instance.currentLevel = id;
       }
@@ -4496,11 +4521,13 @@
     if (player.type === "dash") {
       if (id === -1) {
         lockedInstances.delete(player.instance);
+        releaseLockCheckTimer();
         player.instance.updateSettings({
           streaming: { abr: { autoSwitchBitrate: { video: true } } },
         });
       } else {
         lockedInstances.set(player.instance, { type: "dash", id });
+        ensureLockCheckTimer();
         player.instance.updateSettings({
           streaming: { abr: { autoSwitchBitrate: { video: false } } },
         });
@@ -4543,6 +4570,7 @@
           lastReselect: Date.now(),
         };
         lockedInstances.set(player.instance, lock);
+        ensureLockCheckTimer();
         attachShakaGuards(player.instance);
 
         // Cada paso por separado: si uno falla (build viejo, clave
@@ -4569,6 +4597,7 @@
 
       if (id === -1) {
         lockedInstances.delete(player.instance);
+        releaseLockCheckTimer();
         const unrestricted = {
           minHeight: 0,
           maxHeight: Infinity,
@@ -4616,6 +4645,7 @@
             abrRestrictions: restrictions,
             hard: false,
           });
+          ensureLockCheckTimer();
           attachShakaGuards(player.instance);
 
           configureShakaSafe(player.instance, { restrictions });
@@ -6137,6 +6167,30 @@
 
   window.addEventListener("qs-get-speed-info", (event) => {
     const requestId = event && event.detail && event.detail.requestId;
+
+    // Los iframes de chat/ads no tienen <video> ni shadow roots: antes
+    // contestaban igual, pero pagaban getActivePlayer() + un escaneo profundo
+    // del DOM cada 250 ms mientras el popup estaba abierto.
+    let hasVideo = false;
+    try {
+      hasVideo = !!(document.querySelector && document.querySelector("video"));
+    } catch (e) {}
+    if (!hasVideo && __qsShadowRootCount === 0) {
+      window.dispatchEvent(
+        new CustomEvent("qs-speed-info-response", {
+          detail: {
+            found: false,
+            rate: 1,
+            pinned: false,
+            released: false,
+            live: false,
+            requestId,
+          },
+        })
+      );
+      return;
+    }
+
     let detail;
     try {
       currentPlayer = getActivePlayer();
@@ -6569,6 +6623,29 @@
     }, 120);
   }
 
+  // Chequeo barato para no escanear el DOM entero mientras el video viene
+  // sonando: el cartel aparece cuando YouTube pausa. Buscamos solo en los
+  // contenedores conocidos (sus shadow roots) y en <video> del light DOM.
+  // Si no encontramos nada, igual escaneamos: mejor un falso escaneo que
+  // perder el cartel.
+  function qsStillVideoPlaying() {
+    try {
+      if (document.querySelector) {
+        const light = document.querySelector("video");
+        if (light && !light.paused && !light.ended) return true;
+      }
+      if (document.querySelectorAll) {
+        const hosts = document.querySelectorAll("ytd-player,ytmusic-player-page");
+        for (const host of hosts) {
+          const root = host.shadowRoot || __qsShadowRegistry.get(host);
+          const video = root && root.querySelector("video");
+          if (video && !video.paused && !video.ended) return true;
+        }
+      }
+    } catch (e) {}
+    return false;
+  }
+
   function qsStillInstall() {
     if (qsStillInstalled) return;
     qsStillInstalled = true;
@@ -6580,7 +6657,12 @@
       qsStillScan();
       // Red de seguridad: el MutationObserver se pierde si el sitio reemplaza
       // el nodo observado o si el diálogo se crea dentro de un shadow root.
-      setInterval(qsStillScan, 2500);
+      // Antes era cada 2,5 s; con el observer ya cubriendo las mutaciones,
+      // 10 s alcanza y evita escaneos recursivos innecesarios.
+      setInterval(() => {
+        if (qsStillVideoPlaying()) return;
+        qsStillScan();
+      }, 10000);
       try {
         const observer = new MutationObserver((mutations) => {
           for (const mutation of mutations) {

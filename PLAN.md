@@ -16,6 +16,14 @@ otras plataformas.
 > el sondeo 1080p. Además, las calidades se muestran en un **desplegable**
 > (`<select>`) en todas las plataformas. Ver sección 6.1.
 
+> **Nota 1.5.6**: reducción de CPU/RAM sin cambiar el comportamiento. El timer
+> de reafirmación de calidad se crea solo cuando hay un lock; `qs-get-speed-info`
+> responde sin escanear en frames sin `<video>` ni shadow roots; el popup consulta
+> solo el frame con reproductor (con fallback) y agrupa los `input` de los
+> sliders; el cartel "¿Sigues viendo?" baja a 10 s y no escanea si el video está
+> sonando; `usedStreamIds` queda acotado a 64 y se remueven listeners al soltar.
+> Ver sección 19.
+
 > **Nota 1.5.5**: se agregó el cierre automático del cartel "¿Sigues viendo?"
 > de **YouTube / YouTube Music**: se confirma apenas aparece y se reanuda el
 > video si quedó pausado. Solo en esos hosts, con opt-out
@@ -924,4 +932,38 @@ Archivos tocados en v1.5.5:
   elección del botón, reanudación, opt-out y `__qsStillWatchingDebug()`).
 - `manifest.json` — versión `1.5.5`.
 - `README.md` — sección "Cartel ¿Sigues viendo?" y fila de diagnóstico.
+- `PLAN.md` — esta sección.
+
+---
+
+## 19. v1.5.6 — Livianidad (CPU/RAM)
+
+Sin cambios de comportamiento declarados; solo se evita trabajo innecesario.
+
+1. `page-hook.js`: `ensureLockCheckTimer()` / `releaseLockCheckTimer()` crean y
+   apagan el intervalo de 4 s solo mientras haya `lockedInstances`.
+2. `page-hook.js`: contador de `attachShadow` para responder `found: false` en
+   `qs-get-speed-info` cuando el frame no tiene `<video>` ni shadow roots.
+3. `page-hook.js`: el safety-net del cartel pasa de 2500 ms a 10000 ms y
+   `qsStillVideoPlaying()` evita escanear mientras el video reproduce. El
+   `MutationObserver` sigue cubriendo la aparición normal del diálogo.
+4. `popup.js`: `speedPollLoop()` usa `sendToFrame()` cuando `speedFrameId` es
+   conocido y cae al broadcast si la respuesta no es `found: true`.
+5. `popup.js`: `flushSpeedSlider()` / `flushVolumeSlider()` agrupan los eventos
+   `input` (100/120 ms) y envían el valor final en `change`; los timers se limpian
+   en `unload`.
+6. `offscreen.js`: FIFO de 64 en `usedStreamIds` y `state.cleanups` para remover
+   `statechange` / `ended` en `stopTab()`.
+
+No se tocó `manifest.json` más allá del bump de versión: sigue `all_frames: true`.
+
+Prueba: `test-perf-lite.js` (20 PASS) cubre los seis puntos con código real
+extraído de los archivos. Regresión: `test-security.js` (19),
+`test-still-watching.js` (11), `test-ramp.js` (10) y `check-ids.js` siguen pasando.
+
+Archivos tocados en v1.5.6:
+
+- `page-hook.js`, `popup.js`, `offscreen.js` — optimizaciones.
+- `manifest.json` — versión `1.5.6`.
+- `README.md` — versión actual.
 - `PLAN.md` — esta sección.
