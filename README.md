@@ -14,9 +14,7 @@ Versión actual: **1.5.7**. Licencia MIT.
 
 [English](README.en.md)
 
-> **La imagen de abajo es una ilustración del popup, no una captura real.**
-
-![Vista ilustrativa del popup](docs/popup-preview.png)
+![Captura del popup de Stream Control](docs/streamcontrolui.png)
 
 ---
 

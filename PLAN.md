@@ -1021,8 +1021,8 @@ tag `v1.5.7` apunta al commit final que incluye esta sección.
 3. `README.en.md`: resumen en inglés, diagrama Mermaid de la arquitectura
    (MAIN world vs. isolated world) y tabla de motores. `README.md` enlaza a él,
    agrega el mismo diagrama y aclara la instalación desde Release.
-4. `docs/popup-preview.png`: **ilustración** del popup, rotulada como tal. No
-   pretende ser una captura real: no hay Chrome visual en el entorno de trabajo.
+4. `docs/streamcontrolui.png`: captura real del popup aportada por el autor
+   (275×476). Reemplaza la ilustración usada mientras no había Chrome visual.
 5. `LICENSE`: MIT.
 
 Publicación: tag `v1.5.7` + Release con ZIP `stream-control-1.5.7.zip`, y

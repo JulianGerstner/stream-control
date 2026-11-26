@@ -8,11 +8,7 @@ live streams with reduced latency, but it works with VOD too.
 
 Current version: **1.5.7**. MIT licensed.
 
-> [!NOTE]
-> The popup below is an **illustrative mockup**, not a real screenshot. I cannot
-> capture Chrome from this environment.
-
-![Illustrative popup preview](docs/popup-preview.png)
+![Stream Control popup](docs/streamcontrolui.png)
 
 ## Why it exists
 
