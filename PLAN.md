@@ -16,6 +16,13 @@ otras plataformas.
 > el sondeo 1080p. Además, las calidades se muestran en un **desplegable**
 > (`<select>`) en todas las plataformas. Ver sección 6.1.
 
+> **Nota 1.5.7**: rebranding visible a **Stream Control**, alineado con el
+> nombre del repo. Cambian `manifest.json` (`name` / `default_title`), los
+> títulos de `popup.html` y `offscreen.html`, el `<h1>` del popup, el aviso de
+> captura ajena en `background.js` y las referencias del `README.md`. Los
+> prefijos internos `nds-` y la carpeta física `noDelayStream` quedan intactos.
+> Ver sección 20.
+
 > **Nota 1.5.6**: reducción de CPU/RAM sin cambiar el comportamiento. El timer
 > de reafirmación de calidad se crea solo cuando hay un lock; `qs-get-speed-info`
 > responde sin escanear en frames sin `<video>` ni shadow roots; el popup consulta
@@ -966,4 +973,33 @@ Archivos tocados en v1.5.6:
 - `page-hook.js`, `popup.js`, `offscreen.js` — optimizaciones.
 - `manifest.json` — versión `1.5.6`.
 - `README.md` — versión actual.
+- `PLAN.md` — esta sección.
+
+---
+
+## 20. v1.5.7 — Rebranding a Stream Control
+
+Solo cambios visibles; ningún mensaje, target ni clave de almacenamiento cambia.
+
+1. `manifest.json`: `name` y `action.default_title` pasan a `Stream Control`.
+2. `popup.html`: `<title>` y `<h1>` pasan a `Stream Control`.
+3. `offscreen.html`: `<title>Stream Control · audio</title>`.
+4. `background.js`: el aviso cuando otra extensión ya captura el audio dice
+   `Stream Control` en vez de `noDelayStream`.
+5. `README.md`: título y referencias al nombre de la extensión. Se conserva
+   `noDelayStream` en el paso de instalación porque es la carpeta física.
+
+Se dejan sin tocar a propósito: los prefijos `nds-` (targets, mensajes,
+`requestId`, storage keys) y la ruta de carga `noDelayStream`. Por eso no hay
+cambios de comportamiento ni de compatibilidad con configuraciones previas.
+
+Prueba: `check-ids.js` sin IDs faltantes, `node --check background.js`,
+`test-security.js` 19 PASS. El manifest local reporta
+`Stream Control | Stream Control | 1.5.7`.
+
+Archivos tocados en v1.5.7:
+
+- `manifest.json` — nombre visible y versión `1.5.7`.
+- `popup.html`, `offscreen.html`, `background.js` — textos visibles.
+- `README.md` — nombre y versión actual.
 - `PLAN.md` — esta sección.

@@ -1,4 +1,4 @@
-# noDelayStream
+# Stream Control
 
 Extensión de Chrome (Manifest V3) para controlar el reproductor de video de la
 pestaña activa: **velocidad**, **calidad/bitrate** y **volumen**. Está pensada
@@ -10,7 +10,7 @@ motor que usa el sitio (hls.js, dash.js, Shaka, YouTube, Twitch, Netflix,
 Disney+ o HBO/Max) y usa su API cuando existe. Si no la encuentra, degrada sin
 romper la reproducción.
 
-Versión actual: **1.5.6**.
+Versión actual: **1.5.7**.
 
 ---
 
@@ -43,7 +43,7 @@ descomprimida.
 > recargá también la pestaña del video. Si no, quedan content scripts viejos
 > corriendo y el popup puede decir que no encontró el reproductor.
 >
-> Si ya tenías otra copia de noDelayStream cargada, quitá la anterior: dos
+> Si ya tenías otra copia de Stream Control cargada, quitá la anterior: dos
 > copias activas sobre el mismo video se pisan.
 
 ---
@@ -379,7 +379,7 @@ Condiciones y límites:
 - La captura se activa al mover el slider, tocar un preset o usar una tecla con
   el popup abierto (Chrome exige un gesto de usuario).
 - Solo puede haber **una captura por pestaña**. Si otra extensión (por ejemplo
-  Volume Master) ya está capturando ese audio, noDelayStream avisa y no toca el
+  Volume Master) ya está capturando ese audio, Stream Control avisa y no toca el
   audio.
 - En páginas protegidas (`chrome://`, Chrome Web Store, etc.) la captura no está
   disponible.
@@ -503,7 +503,7 @@ node --check offscreen.js
 Para probar cambios:
 
 1. Guardá los archivos.
-2. En `chrome://extensions`, tocá ⟳ en noDelayStream.
+2. En `chrome://extensions`, tocá ⟳ en Stream Control.
 3. Recargá la pestaña del video.
 4. Abrí el popup y revisá el motor detectado.
 

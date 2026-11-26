@@ -186,7 +186,7 @@ async function setVolumeForTab(tabId, percentValue) {
       reason: "busy",
       percent,
       message:
-        "La pestaña ya está siendo capturada por otra extensión (por ejemplo Volume Master). Desactivala o recargá la pestaña para usar el volumen de noDelayStream.",
+        "La pestaña ya está siendo capturada por otra extensión (por ejemplo Volume Master). Desactivala o recargá la pestaña para usar el volumen de Stream Control.",
     };
   }
 
