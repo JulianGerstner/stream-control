@@ -1074,5 +1074,12 @@ Archivos tocados en v1.5.8:
   textos y puente de strings.
 - `README.md`, `README.en.md`, `PLAN.md` — documentación.
 
+Corrección sobre la marcha: `chrome.i18n` puede devolver `$1` sin sustituir
+cuando el mensaje no declara `placeholders`. `popup.js` ahora tiene
+`fillI18n()` y `t()` rellena los marcadores tanto sobre el valor localizado
+como sobre el fallback, así que `3.2 s buffer` no se muestra como
+`$1 s buffer`. Se agregó `tests/test-i18n.js` a `npm test` para simular ese
+caso. La versión sigue siendo `1.5.8` porque todavía no hay Release/ZIP.
+
 Publicación: versión y commit/push autorizados. Release y ZIP de `1.5.8` no se
 generan en esta sección.

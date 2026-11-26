@@ -1,3 +1,15 @@
+// chrome.i18n no siempre sustituye $1 cuando el mensaje no declara
+// placeholders, así que rellenamos los marcadores nosotros. Es idempotente:
+// si Chrome ya los cambió, no queda nada que reemplazar.
+function fillI18n(text, subs) {
+  let out = String(text == null ? "" : text);
+  const args = Array.isArray(subs) ? subs : subs == null ? [] : [subs];
+  args.forEach((value, i) => {
+    out = out.split("$" + (i + 1)).join(String(value));
+  });
+  return out;
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const statusEl = document.getElementById("status");
   const qualitySelectEl = document.getElementById("quality-select");
@@ -20,9 +32,9 @@ document.addEventListener("DOMContentLoaded", () => {
   function t(key, fallback, subs) {
     try {
       const value = chrome.i18n && chrome.i18n.getMessage(key, subs);
-      return value || fallback;
+      return fillI18n(value || fallback, subs);
     } catch (e) {
-      return fallback;
+      return fillI18n(fallback, subs);
     }
   }
 
