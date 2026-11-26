@@ -30,6 +30,22 @@
 
   let currentPlayer = null; // { type: 'hls' | 'dash' | 'shaka' | 'youtube' | 'netflix' | 'disney' | 'hbo' | 'twitch' | 'kick', instance }
 
+  // El MAIN world no tiene chrome.i18n. bridge.js nos pasa los textos del
+  // popup en el pedido de calidades; si no llegan, seguimos en español.
+  let uiStrings = null;
+  function tr(key, fallback) {
+    return uiStrings && typeof uiStrings[key] === "string"
+      ? uiStrings[key]
+      : fallback;
+  }
+  function trf(key, fallback, args) {
+    let out = tr(key, fallback);
+    (args || []).forEach((value, i) => {
+      out = out.split("$" + (i + 1)).join(String(value));
+    });
+    return out;
+  }
+
   // Instancias con una calidad "bloqueada" manualmente. Cuando el ABR del
   // reproductor intenta bajar la calidad (por un rebuffer, un error, etc.),
   // usamos esto para volver a forzarla. key = instancia del player.
@@ -517,16 +533,18 @@
     else if (!d.playerApp) missing.push("playerApp");
     else if (!d.api) missing.push("getAPI()");
     else if (!d.videoPlayer) missing.push("videoPlayer");
-    else if (!d.sessions) missing.push("sesiones");
+    else if (!d.sessions) missing.push(tr("mSessions", "sesiones"));
     else if (!d.playback) missing.push("playback");
-    else if (!d.streams) missing.push("streams de video");
-    else if (!d.selectable) missing.push("lista de calidades");
+    else if (!d.streams) missing.push(tr("mStreams", "streams de video"));
+    else if (!d.selectable) missing.push(tr("mQualities", "lista de calidades"));
     if (!missing.length) {
-      return `Diagnóstico: no se pudo usar el selector (playback ${
-        d.playback ? "OK" : "no"
-      }, streams ${d.streams}, video ${d.video ? "OK" : "no"}).`;
+      return trf(
+        "diagFailed",
+        "Diagnóstico: no se pudo usar el selector (playback $1, streams $2, video $3).",
+        [d.playback ? "OK" : "no", d.streams, d.video ? "OK" : "no"]
+      );
     }
-    return `Diagnóstico: faltó ${missing.join(", ")}.`;
+    return trf("diagMissing", "Diagnóstico: faltó $1.", [missing.join(", ")]);
   }
 
   try {
@@ -3327,19 +3345,19 @@
   function kickFailLabel() {
     switch (kickLastFail) {
       case "sin-video":
-        return "no hay <video>";
+        return tr("kNoVideo", "no hay <video>");
       case "sin-engranaje":
-        return "no encontré el botón ⚙️";
+        return tr("kNoGear", "no encontré el botón ⚙️");
       case "menu-no-abrio":
-        return "el menú no se abrió";
+        return tr("kMenuClosed", "el menú no se abrió");
       case "menu-equivocado":
-        return "abrí otro menú (subtítulos/audio)";
+        return tr("kWrongMenu", "abrí otro menú (subtítulos/audio)");
       case "menu-vacio":
-        return "el menú no mostró calidades";
+        return tr("kEmptyMenu", "el menú no mostró calidades");
       case "error":
-        return "error inesperado";
+        return tr("kError", "error inesperado");
       default:
-        return "motivo desconocido";
+        return tr("kUnknown", "motivo desconocido");
     }
   }
 
@@ -4164,16 +4182,28 @@
         if (rawMax > best.height) {
           return {
             height: best.height,
-            text: `Tope: ${best.height}p (${rawMax}p bloqueado)`,
+            text: trf("capBlocked", "Tope: $1p ($2p bloqueado)", [
+              best.height,
+              rawMax,
+            ]),
           };
         }
-        return { height: best.height, text: `Cuenta: hasta ${best.height}p` };
+        return {
+          height: best.height,
+          text: trf("capAccount", "Cuenta: hasta $1p", [best.height]),
+        };
       }
       if (player && player.type === "kick") {
         // Kick no tiene planes: el techo es el que trae el stream.
-        return { height: best.height, text: `Máx. del stream: ${best.label}` };
+        return {
+          height: best.height,
+          text: trf("capKick", "Máx. del stream: $1", [best.label]),
+        };
       }
-      return { height: best.height, text: `Tope: ${best.height}p` };
+      return {
+        height: best.height,
+        text: trf("capGeneric", "Tope: $1p", [best.height]),
+      };
     } catch (e) {
       // El tope es informativo: si algo falla, el selector sigue funcionando.
       return null;
@@ -4266,7 +4296,7 @@
       if (list.length) {
         list.unshift({
           id: -2,
-          label: "Máxima fija",
+          label: tr("qualityMaxFixed", "Máxima fija"),
           active: !!(lock && lock.hard),
         });
       }
@@ -4375,7 +4405,7 @@
       sortQualitiesDesc(list);
       let autoLabel = "Auto";
       if (!cap && !variantKey) {
-        if (floor) autoLabel = `Auto (mín. ${floor}p)`;
+        if (floor) autoLabel = trf("autoMin", "Auto (mín. $1p)", [floor]);
         else if (current) autoLabel = `Auto (${current}p)`;
       }
       list.push({
@@ -6710,7 +6740,9 @@
   // El popup persiste la preferencia en chrome.storage; bridge.js la traduce
   // a este evento porque page-hook corre en el MAIN world y no ve chrome.*.
   window.addEventListener("qs-request-qualities", (event) => {
-    const requestId = event && event.detail && event.detail.requestId;
+    const detailFromPopup = event && event.detail;
+    const requestId = detailFromPopup && detailFromPopup.requestId;
+    uiStrings = detailFromPopup && detailFromPopup.strings;
     const send = (detail) => {
       const payload = Object.assign({}, detail, { requestId });
       window.dispatchEvent(
@@ -6723,21 +6755,39 @@
       preconnectToStreamHosts(currentPlayer);
       let notice = null;
       if (isNetflixHost()) {
-        notice = "Netflix: experimental y contra sus ToS.";
+        notice = tr(
+          "noticeNetflix",
+          "Netflix: experimental y contra sus ToS."
+        );
         if (!currentPlayer || currentPlayer.type !== "netflix") {
           notice += ` ${netflixDiagnosticText()}`;
         }
       } else if (isDisneyHost()) {
-        notice = "Disney+: experimental. Elegir calidad recarga la pestaña.";
+        notice = tr(
+          "noticeDisney",
+          "Disney+: experimental. Elegir calidad recarga la pestaña."
+        );
         if (!disneyIntercepted) {
-          notice += " No se leyó el master: solo Auto disponible.";
+          notice += tr(
+            "noticeDisneyNoMaster",
+            " No se leyó el master: solo Auto disponible."
+          );
         }
       } else if (isHboHost()) {
-        notice = "HBO/Max: experimental. El cambio puede tardar ~30 s.";
+        notice = tr(
+          "noticeHbo",
+          "HBO/Max: experimental. El cambio puede tardar ~30 s."
+        );
       } else if (isTwitchHost()) {
-        notice = "Twitch: experimental. La elección se recuerda al recargar.";
+        notice = tr(
+          "noticeTwitch",
+          "Twitch: experimental. La elección se recuerda al recargar."
+        );
       } else if (isKickHost()) {
-        notice = "Kick: el menú ⚙️ se abre y se cierra para leer las calidades.";
+        notice = tr(
+          "noticeKick",
+          "Kick: el menú ⚙️ se abre y se cierra para leer las calidades."
+        );
       }
 
       // Kick no tiene API: hay que abrir su menú, así que la respuesta es
@@ -6755,7 +6805,11 @@
             cap: getQualityCap(kickPlayer, qualities),
             notice: hasReal
               ? notice
-              : `Kick: no se pudo leer el menú (${kickFailLabel()}); solo Auto disponible.`,
+              : trf(
+                  "noticeKickFail",
+                  "Kick: no se pudo leer el menú ($1); solo Auto disponible.",
+                  [kickFailLabel()]
+                ),
           });
         }).catch(() => {
           send({ found: false, error: true, notice });

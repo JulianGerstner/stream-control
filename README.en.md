@@ -6,7 +6,7 @@ A Chrome/Edge Manifest V3 extension that controls **playback speed**, **quality 
 bitrate** and **volume** for the video in the active tab. It is designed for
 live streams with reduced latency, but it works with VOD too.
 
-Current version: **1.5.7**. MIT licensed.
+Current version: **1.5.8**. MIT licensed.
 
 ![Stream Control popup](docs/streamcontrolui.png)
 
@@ -29,6 +29,13 @@ not inject fake quality levels or break playback.
   margin, and a one-shot 1.06× startup ramp limited to Shaka/DGO.
 - **Experimental adapters** for Netflix, Disney+, HBO/Max, Twitch and Kick,
   with per-site debug functions.
+- **Automatic language**: popup, notices and errors follow the browser language
+  (Spanish or English), with no manual switch.
+
+The whole UI —including experimental-picker notices and capture errors— is
+chosen with `chrome.i18n` from Chrome/Edge's UI language. There is no in-popup
+switch: Spanish uses `_locales/es`, English uses `_locales/en`, and other
+browser locales fall back to the default (`es`).
 
 Everything runs locally. No analytics, no remote code, no server calls.
 

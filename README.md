@@ -10,7 +10,7 @@ motor que usa el sitio (hls.js, dash.js, Shaka, YouTube, Twitch, Netflix,
 Disney+ o HBO/Max) y usa su API cuando existe. Si no la encuentra, degrada sin
 romper la reproducción.
 
-Versión actual: **1.5.7**. Licencia MIT.
+Versión actual: **1.5.8**. Licencia MIT.
 
 [English](README.en.md)
 
@@ -30,6 +30,8 @@ Versión actual: **1.5.7**. Licencia MIT.
   vivo y hace un ajuste único de velocidad al inicio de la transmisión.
 - **Selectores experimentales** para Netflix, Disney+, HBO/Max y Twitch, con
   diagnóstico integrado.
+- **Idioma automático**: popup, avisos y errores siguen el idioma del navegador
+  (español o inglés), sin selector manual.
 
 ---
 
@@ -69,6 +71,12 @@ El popup tiene tres tarjetas:
   alcanzables y el tope real de la sesión.
 - **Velocidad**: valor actual, slider, atajos y estado del vivo.
 - **Volumen**: porcentaje, slider, presets y estado de la captura.
+
+La interfaz completa —incluidos los avisos de los selectores experimentales y
+los errores de captura— se elige con `chrome.i18n` según el idioma de
+Chrome/Edge. No hay selector dentro del popup: si el navegador está en español
+se usa `_locales/es`, si está en inglés `_locales/en`, y si está en otro idioma
+Chrome cae al locale por defecto (`es`).
 
 Cuando la velocidad está fijada por vos, al lado del valor aparece **fijada**.
 Ese es el estado normal: la extensión defiende tu elección.

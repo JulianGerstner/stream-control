@@ -56,9 +56,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (typeof requestId !== "string" || !requestId) return false;
 
   if (msg.type === "get-qualities") {
+    // page-hook.js corre en el MAIN world y no tiene chrome.i18n: el popup le
+    // manda los textos ya traducidos. Solo aceptamos strings cortos y en
+    // cantidad acotada, igual que con cualquier dato que venga del popup.
+    const strings = {};
+    if (msg.strings && typeof msg.strings === "object") {
+      Object.keys(msg.strings)
+        .slice(0, 60)
+        .forEach((key) => {
+          const value = msg.strings[key];
+          if (typeof value === "string" && value.length <= 300) {
+            strings[key] = value;
+          }
+        });
+    }
     waitForResponse("qs-qualities-response", sendResponse, 7000, requestId);
     window.dispatchEvent(
-      new CustomEvent("qs-request-qualities", { detail: { requestId } })
+      new CustomEvent("qs-request-qualities", {
+        detail: { requestId, strings },
+      })
     );
     return true; // respuesta asincrónica
   }

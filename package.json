@@ -1,6 +1,6 @@
 {
   "name": "stream-control",
-  "version": "1.5.7",
+  "version": "1.5.8",
   "private": true,
   "description": "Chrome/Edge MV3 extension to control playback speed, quality and volume of the active tab, with live-stream latency tweaks.",
   "license": "MIT",

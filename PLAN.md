@@ -1035,3 +1035,44 @@ Archivos tocados en esta sección:
 - `manifest.json` — clave `icons`.
 - `README.md`, `README.en.md`, `PLAN.md` — documentación.
 - `package.json`, `tests/*`, `LICENSE`, `icons/*`, `docs/*` — nuevos.
+
+---
+
+## 22. v1.5.8 — Idioma de la interfaz según el navegador
+
+Sin selector manual: `chrome.i18n` elige entre `_locales/es` y `_locales/en`
+según el idioma de la UI de Chrome/Edge. Si el navegador está en otro idioma,
+Chrome usa el `default_locale` (`es`). No cambia ningún comportamiento: solo
+textos visibles.
+
+1. `manifest.json`: `default_locale: "es"`, descripción localizable con
+   `__MSG_extDescription__` y versión `1.5.8`.
+2. `popup.html`: atributos `data-i18n`, `data-i18n-title` y `data-i18n-aria`
+   para los textos y accesorios estáticos.
+3. `popup.js`: helper `t()` con fallback en español, `applyStaticI18n()` para
+   marcar `<html lang>`, textos dinámicos traducidos y `UI_STRINGS` con los
+   avisos que necesita el reproductor.
+4. `page-hook.js` corre en el MAIN world y no ve `chrome.i18n`: el popup manda
+   los textos ya traducidos en `{ type: "get-qualities", strings }`.
+   `bridge.js` filtra el paquete (hasta 60 claves, valores de hasta 300
+   caracteres) y `page-hook.js` los aplica con `tr()` / `trf()` en avisos,
+   topes, etiquetas y diagnósticos. Si no llegan, sigue en español.
+5. `background.js`: mismo helper `t()` con fallback para los errores de
+   captura, de modo que los mocks de tests sigan funcionando sin `chrome.i18n`.
+
+Se dejan intactos los prefijos `nds-`, la carpeta `noDelayStream`, los mensajes
+internos y las claves de storage.
+
+Validación: `node --check` en los 5 JS, parseo JSON de `manifest.json` y de
+ambos `messages.json`, y `npm test` (8 scripts con asserts) sin fallos.
+
+Archivos tocados en v1.5.8:
+
+- `_locales/es/messages.json`, `_locales/en/messages.json` — nuevos.
+- `manifest.json`, `package.json` — default locale, descripción y versión.
+- `popup.html`, `popup.js`, `bridge.js`, `page-hook.js`, `background.js` —
+  textos y puente de strings.
+- `README.md`, `README.en.md`, `PLAN.md` — documentación.
+
+Publicación: versión y commit/push autorizados. Release y ZIP de `1.5.8` no se
+generan en esta sección.

@@ -8,23 +8,34 @@
   <body>
     <header>
       <h1>Stream Control</h1>
-      <button id="refresh" title="Volver a buscar" aria-label="Volver a buscar">
+      <button
+        id="refresh"
+        title="Volver a buscar"
+        aria-label="Volver a buscar"
+        data-i18n-title="refreshTitle"
+        data-i18n-aria="refreshTitle"
+      >
         ⟳
       </button>
     </header>
 
     <section class="card">
       <div class="row">
-        <span id="status" class="status">Buscando…</span>
+        <span id="status" class="status" data-i18n="searching">Buscando…</span>
       </div>
-      <select id="quality-select" aria-label="Calidad" hidden></select>
+      <select
+        id="quality-select"
+        aria-label="Calidad"
+        data-i18n-aria="qualityAria"
+        hidden
+      ></select>
       <p id="quality-cap" class="meta" hidden></p>
       <p id="quality-note" class="note" hidden></p>
     </section>
 
     <section class="card">
       <div class="row head">
-        <h2>Velocidad</h2>
+        <h2 data-i18n="speedHeading">Velocidad</h2>
         <span id="speed-status" class="value">—</span>
       </div>
       <p id="speed-meta" class="meta"></p>
@@ -36,10 +47,13 @@
         step="5"
         value="100"
         aria-label="Velocidad"
+        data-i18n-aria="speedAria"
       />
       <div id="speed-buttons" class="chips"></div>
       <div class="row actions">
-        <button id="catch-up-live" class="link" hidden>Ir al vivo</button>
+        <button id="catch-up-live" class="link" data-i18n="goLive" hidden>
+          Ir al vivo
+        </button>
         <span id="ramp-status" class="tag" hidden></span>
       </div>
       <p id="speed-note" class="note" hidden></p>
@@ -47,7 +61,7 @@
 
     <section class="card">
       <div class="row head">
-        <h2>Volumen</h2>
+        <h2 data-i18n="volumeHeading">Volumen</h2>
         <span class="value"
           ><span id="volume-value">100</span><span class="unit">%</span></span
         >
@@ -60,6 +74,7 @@
         step="1"
         value="19"
         aria-label="Volumen"
+        data-i18n-aria="volumeAria"
       />
       <div id="volume-presets" class="chips">
         <button class="quality-btn" data-percent="0">0%</button>
@@ -69,9 +84,16 @@
       </div>
       <button id="volume-restore" class="quality-btn" hidden></button>
       <div class="row actions">
-        <button id="volume-stop" class="link danger" hidden>Detener</button>
+        <button
+          id="volume-stop"
+          class="link danger"
+          data-i18n="stopCapture"
+          hidden
+        >
+          Detener
+        </button>
       </div>
-      <p id="volume-status" class="meta">Sin captura</p>
+      <p id="volume-status" class="meta" data-i18n="noCapture">Sin captura</p>
     </section>
 
     <script src="popup.js"></script>

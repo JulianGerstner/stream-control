@@ -18,6 +18,18 @@ const BG_TARGET = "nds-background";
 const OFFSCREEN_TARGET = "nds-offscreen";
 const VOLUME_VALUE_MAX = 600;
 
+//chrome.i18n elige el idioma de la UI del navegador (ver _locales/).
+//El fallback en español mantiene los mensajes legibles en entornos de test
+//(o si la API no estuviera disponible) y evita tocar la lógica de captura.
+function t(key, fallback, subs) {
+  try {
+    const value = chrome.i18n && chrome.i18n.getMessage(key, subs);
+    return value || fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+
 let creatingOffscreen = null;
 // Serializa los pedidos por pestaña: si el usuario arrastra el slider llegan
 // muchos mensajes seguidos y no queremos pedir diez streamIds en paralelo.
@@ -154,7 +166,10 @@ async function setVolumeForTab(tabId, percentValue) {
       ok: false,
       reason: "no-tab",
       percent,
-      message: "La pestaña ya no está disponible o no es una página web.",
+      message: t(
+        "bgNoTab",
+        "La pestaña ya no está disponible o no es una página web."
+      ),
     };
   }
 
@@ -185,8 +200,10 @@ async function setVolumeForTab(tabId, percentValue) {
       ok: false,
       reason: "busy",
       percent,
-      message:
-        "La pestaña ya está siendo capturada por otra extensión (por ejemplo Volume Master). Desactivala o recargá la pestaña para usar el volumen de Stream Control.",
+      message: t(
+        "captureBusy",
+        "La pestaña ya está siendo capturada por otra extensión (por ejemplo Volume Master). Desactivala o recargá la pestaña para usar el volumen de Stream Control."
+      ),
     };
   }
 
@@ -203,8 +220,14 @@ async function setVolumeForTab(tabId, percentValue) {
       percent,
       error: String(e),
       message: isBusyError(e)
-        ? "No se pudo capturar el audio: puede que otra extensión esté usando esta pestaña. No se modificó el audio."
-        : "No se pudo iniciar la captura de audio de la pestaña.",
+        ? t(
+            "bgBusyError",
+            "No se pudo capturar el audio: puede que otra extensión esté usando esta pestaña. No se modificó el audio."
+          )
+        : t(
+            "bgCaptureStart",
+            "No se pudo iniciar la captura de audio de la pestaña."
+          ),
     };
   }
 
@@ -230,8 +253,10 @@ async function setVolumeForTab(tabId, percentValue) {
     reason: isBusyError(result && result.error) ? "busy" : "capture-failed",
     percent,
     error: (result && result.error) || "sin respuesta del offscreen",
-    message:
-      "No se pudo activar la captura de audio. Si tenés Volume Master activo en esta pestaña, desactivalo: dos extensiones no pueden capturar el mismo audio.",
+    message: t(
+      "bgActivateFailed",
+      "No se pudo activar la captura de audio. Si tenés Volume Master activo en esta pestaña, desactivalo: dos extensiones no pueden capturar el mismo audio."
+    ),
   };
 }
 
