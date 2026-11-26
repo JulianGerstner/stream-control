@@ -10,7 +10,13 @@ motor que usa el sitio (hls.js, dash.js, Shaka, YouTube, Twitch, Netflix,
 Disney+ o HBO/Max) y usa su API cuando existe. Si no la encuentra, degrada sin
 romper la reproducción.
 
-Versión actual: **1.5.7**.
+Versión actual: **1.5.7**. Licencia MIT.
+
+[English](README.en.md)
+
+> **La imagen de abajo es una ilustración del popup, no una captura real.**
+
+![Vista ilustrativa del popup](docs/popup-preview.png)
 
 ---
 
@@ -33,7 +39,9 @@ Versión actual: **1.5.7**.
 
 1. Abrí Chrome y entrá a `chrome://extensions`.
 2. Activá **Modo de desarrollador** (arriba a la derecha).
-3. Tocá **Cargar descomprimida** y elegí la carpeta `noDelayStream`.
+3. Tocá **Cargar descomprimida** y elegí la carpeta que contiene
+   `manifest.json`. En un ZIP de Release se llama `stream-control`; si clonás
+   el repo, la carpeta histórica es `noDelayStream`.
 4. Abrí un video, dale play y hacé clic en el ícono de la extensión.
 
 En Edge es igual: `edge://extensions` → Modo de desarrollador → Cargar
@@ -457,6 +465,28 @@ a la API interna de la extensión. Estas comprobaciones son defensa en profundid
 
 ---
 
+## Arquitectura
+
+```mermaid
+flowchart LR
+  P[popup.html / popup.js] -->|chrome.runtime.sendMessage| SW[background.js<br/>service worker]
+  P -->|tabs.sendMessage| B[bridge.js<br/>isolated world]
+  B -->|CustomEvent| H[page-hook.js<br/>MAIN world]
+  H -->|API del player| PL[hls.js · dash.js · Shaka<br/>YouTube · Twitch · Kick · Netflix<br/>Disney+ · HBO/Max]
+  P -->|comando de volumen| SW
+  SW -->|getMediaStreamId| C[chrome.tabCapture]
+  C --> O[offscreen.js<br/>AudioContext + GainNode]
+  SW --> O
+```
+
+La separación es a propósito: el MAIN world ve la API interna del reproductor
+pero no tiene permisos `chrome.*`; el mundo aislado tiene las APIs de la
+extensión pero no ve el player. `bridge.js` pasa mensajes tipados entre ambos.
+Cada pedido lleva `requestId`, los comandos van solo al frame que reportó tener
+reproductor y un iframe de terceros no puede manejar el frame principal.
+
+---
+
 ## Archivos
 
 - `manifest.json` — configuración MV3, permisos y content scripts.
@@ -490,14 +520,13 @@ a la API interna de la extensión. Estas comprobaciones son defensa en profundid
 
 ## Desarrollo
 
-No hay build ni dependencias: son archivos estáticos.
+No hay build ni dependencias: son archivos estáticos. Los tests tampoco
+necesitan navegador: leen el código real y lo ejecutan en un `vm` de Node con
+mocks mínimos (ver `tests/README.md`).
 
 ```bash
-node --check page-hook.js
-node --check popup.js
-node --check bridge.js
-node --check background.js
-node --check offscreen.js
+npm test          # 8 scripts con asserts
+npm run check     # node --check en los 5 JS
 ```
 
 Para probar cambios:
@@ -507,4 +536,6 @@ Para probar cambios:
 3. Recargá la pestaña del video.
 4. Abrí el popup y revisá el motor detectado.
 
-Para publicar en la Chrome Web Store todavía faltan los iconos de la extensión.
+Los iconos ya están en `icons/`. Para la Chrome Web Store falta el alta y la
+revisión de la lista; mientras tanto se instala desde un Release en modo
+desarrollador.

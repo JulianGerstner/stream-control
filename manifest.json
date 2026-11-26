@@ -3,6 +3,11 @@
   "name": "Stream Control",
   "version": "1.5.7",
   "description": "Velocidad, calidad y volumen del video de la pestaña activa. En vivo reduce el delay sin pelear con el reproductor.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": [
     "activeTab",
     "webNavigation",

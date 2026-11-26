@@ -21,7 +21,8 @@ otras plataformas.
 > títulos de `popup.html` y `offscreen.html`, el `<h1>` del popup, el aviso de
 > captura ajena en `background.js` y las referencias del `README.md`. Los
 > prefijos internos `nds-` y la carpeta física `noDelayStream` quedan intactos.
-> Ver sección 20.
+> En el mismo commit final se agregó el material de publicación: iconos, tests
+> en el repo, README en inglés, licencia y Release con ZIP. Ver secciones 20 y 21.
 
 > **Nota 1.5.6**: reducción de CPU/RAM sin cambiar el comportamiento. El timer
 > de reafirmación de calidad se crea solo cuando hay un lock; `qs-get-speed-info`
@@ -1003,3 +1004,34 @@ Archivos tocados en v1.5.7:
 - `popup.html`, `offscreen.html`, `background.js` — textos visibles.
 - `README.md` — nombre y versión actual.
 - `PLAN.md` — esta sección.
+
+---
+
+## 21. v1.5.7 — Material de publicación
+
+Sin cambios de comportamiento; la versión funcional sigue siendo `1.5.7` y el
+tag `v1.5.7` apunta al commit final que incluye esta sección.
+
+1. `icons/icon16.png`, `icon48.png`, `icon128.png`: diseño original (play +
+   barra de velocidad), generado sin dependencias y referenciado desde
+   `manifest.json` (`icons`). Con esto se puede encarar la lista de la Web Store.
+2. `tests/`: los 9 scripts que antes vivían fuera del repo ahora calculan la
+   raíz con `__dirname`. `npm test` corre los 8 con asserts; `npm run check`
+   hace `node --check` en los 5 JS; `test-kick-dom2.js` queda como diagnóstico.
+3. `README.en.md`: resumen en inglés, diagrama Mermaid de la arquitectura
+   (MAIN world vs. isolated world) y tabla de motores. `README.md` enlaza a él,
+   agrega el mismo diagrama y aclara la instalación desde Release.
+4. `docs/popup-preview.png`: **ilustración** del popup, rotulada como tal. No
+   pretende ser una captura real: no hay Chrome visual en el entorno de trabajo.
+5. `LICENSE`: MIT.
+
+Publicación: tag `v1.5.7` + Release con ZIP `stream-control-1.5.7.zip`, y
+descripción/topics del repo configurados por la API de GitHub. El ZIP se
+genera con `Compress-Archive` y no se commitea (`.gitignore` ya excluye
+`*.zip`).
+
+Archivos tocados en esta sección:
+
+- `manifest.json` — clave `icons`.
+- `README.md`, `README.en.md`, `PLAN.md` — documentación.
+- `package.json`, `tests/*`, `LICENSE`, `icons/*`, `docs/*` — nuevos.

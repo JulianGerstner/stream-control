@@ -1,0 +1,10 @@
+const fs = require("fs");
+const path = require("path");
+const dir = path.join(__dirname, "..") + path.sep;
+const js = fs.readFileSync(dir + "popup.js", "utf8");
+const html = fs.readFileSync(dir + "popup.html", "utf8");
+const ids = [...js.matchAll(/getElementById\("([^"]+)"\)/g)].map((m) => m[1]);
+const uniq = [...new Set(ids)];
+const missing = uniq.filter((id) => !new RegExp('id="' + id + '"').test(html));
+console.log("ids:", uniq.length);
+console.log("missing:", missing.length ? missing : "none");
