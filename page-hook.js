@@ -281,6 +281,9 @@
         const lock = lockedInstances.get(instance);
         if (lock) {
           setTimeout(() => {
+            // Si el usuario eligió Auto en esta ventana, el lock ya no existe:
+            // no lo reaplicamos por arte de magia 300 ms después.
+            if (lockedInstances.get(instance) !== lock) return;
             if (instance.currentLevel !== lock.id) {
               instance.currentLevel = lock.id;
             }
@@ -305,13 +308,35 @@
         return;
       }
       lockedInstances.forEach((lock, instance) => {
+        // No despertamos cada 4 s para reafirmar un player que ya no existe.
+        if (
+          !instance ||
+          (lock.type === "hls" && typeof instance.currentLevel !== "number") ||
+          (lock.type === "dash" &&
+            typeof instance.updateSettings !== "function") ||
+          (lock.type === "shaka" && typeof instance.configure !== "function")
+        ) {
+          lockedInstances.delete(instance);
+          return;
+        }
         if (lock.type === "shaka") reassertShakaLock(instance);
         if (lock.type === "hls" && instance.currentLevel !== lock.id) {
           try {
             instance.currentLevel = lock.id;
           } catch (e) {}
         }
+        if (lock.type === "dash") {
+          // En vivo dash.js reactiva el ABR al refrescar el manifest: hay que
+          // volver a apagarlo y a fijar la calidad que eligió el usuario.
+          try {
+            instance.updateSettings({
+              streaming: { abr: { autoSwitchBitrate: { video: false } } },
+            });
+            instance.setQualityFor("video", lock.id);
+          } catch (e) {}
+        }
       });
+      releaseLockCheckTimer();
     }, 4000);
   }
 
@@ -910,10 +935,15 @@
   }
 
   const DISNEY_CAP_KEY = "qs-disney-cap";
+  // El tope y la variante son preferencias del título, no globales: guardamos
+  // también la página donde se eligieron para no filtrar el master del título
+  // siguiente con la elección anterior.
+  const DISNEY_CAP_HREF_KEY = "qs-disney-cap-href";
   // Variante exacta elegida en el selector: altura + bitrate + codec de video.
   // Si está seteada, el filtro deja solo esa variante (en todos los grupos de
   // audio) y no un tope por altura.
   const DISNEY_VARIANT_KEY = "qs-disney-variant";
+  const DISNEY_VARIANT_HREF_KEY = "qs-disney-variant-href";
   // Piso de Auto: sin tope elegido, el master se filtra para que no queden
   // variantes por debajo de esta altura. Se apaga con qs-disney-floor=0
   // (requiere recargar, porque el master se pide una sola vez por sesión).
@@ -923,7 +953,17 @@
   function getDisneyCap() {
     try {
       const n = parseInt(sessionStorage.getItem(DISNEY_CAP_KEY) || "", 10);
-      return Number.isFinite(n) && n > 0 ? n : null;
+      if (!Number.isFinite(n) || n <= 0) return null;
+      const href = sessionStorage.getItem(DISNEY_CAP_HREF_KEY);
+      if (href && href !== location.href) {
+        sessionStorage.removeItem(DISNEY_CAP_KEY);
+        sessionStorage.removeItem(DISNEY_CAP_HREF_KEY);
+        return null;
+      }
+      // Preferencia guardada antes de este arreglo: la anclamos a la página
+      // actual en vez de descartarla.
+      if (!href) sessionStorage.setItem(DISNEY_CAP_HREF_KEY, location.href);
+      return n;
     } catch (e) {
       return null;
     }
@@ -938,15 +978,28 @@
 
   function storeDisneyCap(height) {
     try {
-      if (height) sessionStorage.setItem(DISNEY_CAP_KEY, String(height));
-      else sessionStorage.removeItem(DISNEY_CAP_KEY);
+      if (height) {
+        sessionStorage.setItem(DISNEY_CAP_KEY, String(height));
+        sessionStorage.setItem(DISNEY_CAP_HREF_KEY, location.href);
+      } else {
+        sessionStorage.removeItem(DISNEY_CAP_KEY);
+        sessionStorage.removeItem(DISNEY_CAP_HREF_KEY);
+      }
     } catch (e) {}
   }
 
   function getDisneyVariantKey() {
     try {
       const v = sessionStorage.getItem(DISNEY_VARIANT_KEY);
-      return v || null;
+      if (!v) return null;
+      const href = sessionStorage.getItem(DISNEY_VARIANT_HREF_KEY);
+      if (href && href !== location.href) {
+        sessionStorage.removeItem(DISNEY_VARIANT_KEY);
+        sessionStorage.removeItem(DISNEY_VARIANT_HREF_KEY);
+        return null;
+      }
+      if (!href) sessionStorage.setItem(DISNEY_VARIANT_HREF_KEY, location.href);
+      return v;
     } catch (e) {
       return null;
     }
@@ -954,8 +1007,13 @@
 
   function storeDisneyVariantKey(key) {
     try {
-      if (key) sessionStorage.setItem(DISNEY_VARIANT_KEY, String(key));
-      else sessionStorage.removeItem(DISNEY_VARIANT_KEY);
+      if (key) {
+        sessionStorage.setItem(DISNEY_VARIANT_KEY, String(key));
+        sessionStorage.setItem(DISNEY_VARIANT_HREF_KEY, location.href);
+      } else {
+        sessionStorage.removeItem(DISNEY_VARIANT_KEY);
+        sessionStorage.removeItem(DISNEY_VARIANT_HREF_KEY);
+      }
     } catch (e) {}
   }
 

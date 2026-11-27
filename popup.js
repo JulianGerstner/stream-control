@@ -1024,10 +1024,9 @@ document.addEventListener("DOMContentLoaded", () => {
         target.type !== "radio") ||
       (target && target.isContentEditable);
     if (isTextField) return;
-    if (typeof e.key !== "string" || e.key.length !== 1) return;
-    const digit = Number(e.key);
-    if (!Number.isInteger(digit)) return;
-    const percent = digit * 100;
+    // Number(" ") es 0: sin este filtro, space activaría 0% y lo guardaría.
+    if (!/^[0-9]$/.test(e.key)) return;
+    const percent = Number(e.key) * 100;
     if (percent > VOLUME_VALUE_MAX) return;
     e.preventDefault();
     applyVolume(percent, { persist: true });

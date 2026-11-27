@@ -37,6 +37,31 @@ const perTabQueue = new Map();
 // pestañas con captura propia -> URL al momento de activarla. Se usa para
 // soltar la captura en cuanto la pestaña navega a otra página.
 const capturedTabs = new Map();
+// Generación por pestaña: si navega mientras una activación está en vuelo, la
+// tarea se descarta antes de crear la captura. Si no, el "stop" se ejecuta
+// primero y la captura nace después, sin nadie que la suelte.
+const tabGenerations = new Map();
+// Página de la pestaña cuando arrancó la tarea en vuelo, para distinguir un
+// cambio de documento de un simple pushState/hash aunque todavía no haya
+// captura registrada.
+const inFlightPages = new Map();
+
+function bumpTabGeneration(tabId) {
+  const next = (tabGenerations.get(tabId) || 0) + 1;
+  tabGenerations.set(tabId, next);
+  return next;
+}
+
+// pushState/query/hash no cambian el documento: comparar la URL completa
+// cortaba la captura aunque el <video> siga siendo el mismo.
+function navigationPage(url) {
+  try {
+    const u = new URL(url);
+    return u.origin + u.pathname;
+  } catch (e) {
+    return String(url || "");
+  }
+}
 
 function isFromPopup(sender) {
   return !!(
@@ -122,9 +147,12 @@ function enqueueForTab(tabId, task) {
   const prev = perTabQueue.get(tabId) || Promise.resolve();
   const next = prev.catch(() => {}).then(task);
   perTabQueue.set(tabId, next);
-  next.finally(() => {
+  // finally() devuelve otra promesa: si next rechaza, esa derivada también.
+  const cleanup = () => {
+    inFlightPages.delete(tabId);
     if (perTabQueue.get(tabId) === next) perTabQueue.delete(tabId);
-  });
+  };
+  next.then(cleanup, cleanup);
   return next;
 }
 
@@ -157,10 +185,15 @@ function isBusyError(error) {
 
 async function setVolumeForTab(tabId, percentValue) {
   const percent = clampVolume(percentValue);
+  const generation = tabGenerations.get(tabId) || 0;
+  const stale = () => (tabGenerations.get(tabId) || 0) !== generation;
+  const navigated = () => ({ ok: false, reason: "navigated", percent });
 
   // La pestaña tiene que existir y ser una página http(s). Esto evita capturar
   // chrome://, extensiones, la nueva pestaña o un tabId inventado.
   const url = await operableTabUrl(tabId);
+  if (stale()) return navigated();
+  if (url) inFlightPages.set(tabId, navigationPage(url));
   if (!url) {
     return {
       ok: false,
@@ -179,12 +212,14 @@ async function setVolumeForTab(tabId, percentValue) {
       type: "nds-offscreen-get",
       tabId,
     });
+    if (stale()) return navigated();
     if (status && status.active) {
       const updated = await sendToOffscreen({
         type: "nds-offscreen-set",
         tabId,
         percent,
       });
+      if (stale()) return navigated();
       if (updated && updated.ok) {
         capturedTabs.set(tabId, url);
         return updated;
@@ -196,6 +231,7 @@ async function setVolumeForTab(tabId, percentValue) {
   // 2) Nadie de los nuestros la tiene. Antes de pedir el streamId, miramos si
   //    ya está capturada: en ese caso avisamos y no tocamos el audio.
   if (await isTabCapturedBySomeone(tabId)) {
+    if (stale()) return navigated();
     return {
       ok: false,
       reason: "busy",
@@ -231,7 +267,9 @@ async function setVolumeForTab(tabId, percentValue) {
     };
   }
 
+  if (stale()) return navigated();
   await ensureOffscreenDocument();
+  if (stale()) return navigated();
   let result;
   try {
     result = await sendToOffscreen({
@@ -242,6 +280,15 @@ async function setVolumeForTab(tabId, percentValue) {
     });
   } catch (e) {
     result = { ok: false, error: String(e), reason: "capture-failed" };
+  }
+  if (stale()) {
+    // El offscreen puede haber creado la captura justo antes del stop de
+    // onUpdated: la soltamos acá también para no dejarla huérfana.
+    try {
+      await sendToOffscreen({ type: "nds-offscreen-stop", tabId });
+    } catch (e) {}
+    capturedTabs.delete(tabId);
+    return navigated();
   }
   if (result && result.ok) {
     capturedTabs.set(tabId, url);
@@ -286,9 +333,9 @@ async function handleMessage(msg, sender) {
   }
 
   if (msg.type === "nds-volume-set") {
-    if (!(await operableTabUrl(msg.tabId))) {
-      return { ok: false, reason: "no-tab" };
-    }
+    const url = await operableTabUrl(msg.tabId);
+    if (!url) return { ok: false, reason: "no-tab" };
+    inFlightPages.set(msg.tabId, navigationPage(url));
     return enqueueForTab(msg.tabId, () =>
       setVolumeForTab(msg.tabId, msg.percent)
     );
@@ -335,20 +382,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
   if (!changeInfo || changeInfo.url === undefined) return;
   const capturedUrl = capturedTabs.get(tabId);
-  if (!capturedUrl || changeInfo.url === capturedUrl) return;
+  const knownPage = capturedUrl
+    ? navigationPage(capturedUrl)
+    : inFlightPages.get(tabId) || null;
+  if (knownPage && navigationPage(changeInfo.url) === knownPage) {
+    return; // mismo documento: pushState/query/hash no cortan el volumen
+  }
+  // Invalidar primero: una activación en vuelo debe abandonarse antes de
+  // crear la captura, y el stop se encola detrás de lo que ya esté corriendo.
+  bumpTabGeneration(tabId);
   capturedTabs.delete(tabId);
-  perTabQueue.delete(tabId);
-  try {
-    if (await hasOffscreenDocument()) {
-      await sendToOffscreen({ type: "nds-offscreen-stop", tabId });
-    }
-  } catch (e) {}
+  if (knownPage) {
+    await enqueueForTab(tabId, async () => {
+      if (!(await hasOffscreenDocument())) return;
+      try {
+        await sendToOffscreen({ type: "nds-offscreen-stop", tabId });
+      } catch (e) {}
+    });
+  }
   try {
     await chrome.action.setBadgeText({ text: "", tabId });
   } catch (e) {}
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+  bumpTabGeneration(tabId);
   capturedTabs.delete(tabId);
   try {
     if (await hasOffscreenDocument()) {
