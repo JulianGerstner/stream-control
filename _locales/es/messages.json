@@ -62,6 +62,7 @@
   "capKick": { "message": "Máx. del stream: $1" },
   "capGeneric": { "message": "Tope: $1p" },
   "qualityMaxFixed": { "message": "Máxima fija" },
+  "qualityFallback": { "message": "Calidad" },
   "autoMin": { "message": "Auto (mín. $1p)" },
   "diagMissing": { "message": "Diagnóstico: faltó $1." },
   "diagFailed": { "message": "Diagnóstico: no se pudo usar el selector (playback $1, streams $2, video $3)." },

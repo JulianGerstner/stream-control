@@ -104,6 +104,7 @@ document.addEventListener("DOMContentLoaded", () => {
     capKick: t("capKick", "Máx. del stream: $1", ["$1"]),
     capGeneric: t("capGeneric", "Tope: $1p", ["$1"]),
     qualityMaxFixed: t("qualityMaxFixed", "Máxima fija"),
+    qualityFallback: t("qualityFallback", "Calidad"),
     autoMin: t("autoMin", "Auto (mín. $1p)", ["$1"]),
     diagMissing: t("diagMissing", "Diagnóstico: faltó $1.", ["$1"]),
     diagFailed: t("diagFailed", "Diagnóstico: no se pudo usar el selector (playback $1, streams $2, video $3).", ["$1", "$2", "$3"]),

@@ -2319,7 +2319,7 @@
     const height = Number(q.height) || 0;
     const fps = Number(q.framerate) || 0;
     const isSource = name === "chunked" || /source/i.test(name);
-    if (!height) return isSource ? "Source" : name || "Calidad";
+    if (!height) return isSource ? "Source" : name || tr("qualityFallback", "Calidad");
     const label = `${height}p${fps >= 50 ? Math.round(fps) : ""}`;
     return isSource ? `${label} (Source)` : label;
   }

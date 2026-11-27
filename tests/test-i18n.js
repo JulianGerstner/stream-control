@@ -17,6 +17,7 @@ function ok(name, cond) {
 // chrome.i18n puede devolver el mensaje con $1 sin sustituir. t() debe
 // rellenarlo igual, tanto sobre el valor localizado como sobre el fallback.
 const popup = read("popup.js");
+const hook = read("page-hook.js");
 const match = popup.match(/function fillI18n\(text, subs\) \{[\s\S]*?\n\}/);
 ok("popup expone fillI18n", !!match);
 let fill = null;
@@ -140,6 +141,19 @@ ok(
 ok(
   "los textos de delay/buffer existen en ambos idiomas",
   !!es.bufferMeta && !!en.bufferMeta && !!es.delayMeta && !!en.delayMeta
+);
+ok(
+  "qualityFallback existe en ambos idiomas",
+  es.qualityFallback && en.qualityFallback &&
+    es.qualityFallback.message !== en.qualityFallback.message
+);
+ok(
+  "UI_STRINGS incluye qualityFallback",
+  /qualityFallback: t\("qualityFallback", "Calidad"\)/.test(popup)
+);
+ok(
+  "page-hook traduce el fallback de Twitch",
+  /name \|\| tr\("qualityFallback", "Calidad"\)/.test(hook)
 );
 
 console.log(failures === 0 ? "TODO OK" : `FALLARON ${failures}`);
