@@ -111,6 +111,24 @@ ok(
   })
 );
 
+// dB: la ganancia es lineal, así que 100 % = 0 dB y 200 % = +6 dB.
+const dbMatch = popup.match(/function percentToDb\(percent, lang\) \{[\s\S]*?\n\}/);
+ok("popup expone percentToDb", !!dbMatch);
+if (dbMatch) {
+  const toDb = vm.runInNewContext("(" + dbMatch[0] + ")", { Intl });
+  ok("100 % equivale a 0,0 dB", toDb(100, "es") === "0,0 dB");
+  ok("200 % equivale a +6,0 dB", toDb(200, "es") === "+6,0 dB");
+  ok("600 % equivale a +15,6 dB", toDb(600, "es") === "+15,6 dB");
+  ok("50 % equivale a -6,0 dB", toDb(50, "es") === "-6,0 dB");
+  ok("0 % es silencio", toDb(0, "es") === "−∞ dB");
+  ok("en inglés usa punto decimal", toDb(200, "en") === "+6.0 dB");
+}
+ok(
+  "renderVolumeValue actualiza los dB",
+  /volumeDbEl\.textContent = percentToDb\(volumeValue, uiLang\)/.test(popup)
+);
+ok("popup.html incluye el valor en dB", /id="volume-db"/.test(read("popup.html")));
+
 const es = localeEs;
 const en = JSON.parse(read("_locales/en/messages.json"));
 const esKeys = Object.keys(es);

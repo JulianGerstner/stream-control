@@ -98,6 +98,10 @@ h2 {
   font-weight: 500;
 }
 
+.value .db {
+  margin-left: 6px;
+}
+
 .value.pinned::after {
   content: "fijada";
   margin-left: 6px;

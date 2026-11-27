@@ -10,6 +10,27 @@ function fillI18n(text, subs) {
   return out;
 }
 
+// El volumen es ganancia lineal (percent / 100), así que el dB relativo a 100 %
+// es 20*log10(ganancia). Es informativo: no incluye volumen del sistema ni SPL.
+function percentToDb(percent, lang) {
+  const n = Number(percent);
+  if (!Number.isFinite(n) || n <= 0) return "−∞ dB";
+  let formatter;
+  try {
+    formatter = new Intl.NumberFormat(lang || undefined, {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    });
+  } catch (e) {
+    formatter = new Intl.NumberFormat(undefined, {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    });
+  }
+  const db = 20 * Math.log10(n / 100);
+  return (db > 0 ? "+" : "") + formatter.format(db) + " dB";
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const statusEl = document.getElementById("status");
   const qualitySelectEl = document.getElementById("quality-select");
@@ -24,6 +45,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const volumeStatusEl = document.getElementById("volume-status");
   const volumeSliderEl = document.getElementById("volume-slider");
   const volumeValueEl = document.getElementById("volume-value");
+  const volumeDbEl = document.getElementById("volume-db");
   const volumeRestoreEl = document.getElementById("volume-restore");
   const volumeStopEl = document.getElementById("volume-stop");
 
@@ -38,13 +60,18 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  let uiLang = "";
+
   function applyStaticI18n() {
     try {
       const lang =
         chrome.i18n &&
         chrome.i18n.getUILanguage &&
         chrome.i18n.getUILanguage();
-      if (lang) document.documentElement.lang = String(lang).split("-")[0];
+      if (lang) {
+        uiLang = String(lang).split("-")[0];
+        document.documentElement.lang = uiLang;
+      }
     } catch (e) {}
     document.querySelectorAll("[data-i18n]").forEach((el) => {
       el.textContent = t(el.dataset.i18n, el.textContent);
@@ -724,6 +751,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function renderVolumeValue(percent) {
     volumeValue = clampVolume(percent);
     volumeValueEl.textContent = String(volumeValue);
+    volumeDbEl.textContent = percentToDb(volumeValue, uiLang);
     // No pisamos el slider mientras el usuario lo está arrastrando, para que
     // no "salte" bajo su dedo/mouse.
     if (!volumeSliderDragging) {
