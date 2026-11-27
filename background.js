@@ -344,7 +344,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
     }
   } catch (e) {}
   try {
-    chrome.action.setBadgeText({ text: "", tabId });
+    await chrome.action.setBadgeText({ text: "", tabId });
   } catch (e) {}
 });
 
@@ -356,7 +356,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     }
   } catch (e) {}
   try {
-    chrome.action.setBadgeText({ text: "", tabId });
+    await chrome.action.setBadgeText({ text: "", tabId });
   } catch (e) {}
   perTabQueue.delete(tabId);
 });
