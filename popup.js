@@ -62,6 +62,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // page-hook.js corre en el MAIN world y no tiene chrome.i18n: recibe este
   // paquete con los textos ya traducidos en cada pedido de calidades.
+  // Los que tienen $1/$2 se piden con el propio marcador como sustitución:
+  // Chrome vacía las sustituciones inexistentes y page-hook las rellena después.
   const UI_STRINGS = {
     noticeNetflix: t("noticeNetflix", "Netflix: experimental y contra sus ToS."),
     noticeDisney: t("noticeDisney", "Disney+: experimental. Elegir calidad recarga la pestaña."),
@@ -69,15 +71,15 @@ document.addEventListener("DOMContentLoaded", () => {
     noticeHbo: t("noticeHbo", "HBO/Max: experimental. El cambio puede tardar ~30 s."),
     noticeTwitch: t("noticeTwitch", "Twitch: experimental. La elección se recuerda al recargar."),
     noticeKick: t("noticeKick", "Kick: el menú ⚙️ se abre y se cierra para leer las calidades."),
-    noticeKickFail: t("noticeKickFail", "Kick: no se pudo leer el menú ($1); solo Auto disponible."),
-    capBlocked: t("capBlocked", "Tope: $1p ($2p bloqueado)"),
-    capAccount: t("capAccount", "Cuenta: hasta $1p"),
-    capKick: t("capKick", "Máx. del stream: $1"),
-    capGeneric: t("capGeneric", "Tope: $1p"),
+    noticeKickFail: t("noticeKickFail", "Kick: no se pudo leer el menú ($1); solo Auto disponible.", ["$1"]),
+    capBlocked: t("capBlocked", "Tope: $1p ($2p bloqueado)", ["$1", "$2"]),
+    capAccount: t("capAccount", "Cuenta: hasta $1p", ["$1"]),
+    capKick: t("capKick", "Máx. del stream: $1", ["$1"]),
+    capGeneric: t("capGeneric", "Tope: $1p", ["$1"]),
     qualityMaxFixed: t("qualityMaxFixed", "Máxima fija"),
-    autoMin: t("autoMin", "Auto (mín. $1p)"),
-    diagMissing: t("diagMissing", "Diagnóstico: faltó $1."),
-    diagFailed: t("diagFailed", "Diagnóstico: no se pudo usar el selector (playback $1, streams $2, video $3)."),
+    autoMin: t("autoMin", "Auto (mín. $1p)", ["$1"]),
+    diagMissing: t("diagMissing", "Diagnóstico: faltó $1.", ["$1"]),
+    diagFailed: t("diagFailed", "Diagnóstico: no se pudo usar el selector (playback $1, streams $2, video $3).", ["$1", "$2", "$3"]),
     mSessions: t("mSessions", "sesiones"),
     mStreams: t("mStreams", "streams de video"),
     mQualities: t("mQualities", "lista de calidades"),

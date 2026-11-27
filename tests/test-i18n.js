@@ -57,7 +57,61 @@ if (tMatch) {
   );
 }
 
-const es = JSON.parse(read("_locales/es/messages.json"));
+// Chrome convierte una sustitución inexistente en cadena vacía. Los textos
+// diferidos se piden con el marcador como sustitución para que page-hook pueda
+// rellenarlos después.
+const localeEs = JSON.parse(read("_locales/es/messages.json"));
+const chromeSinSubs = {
+  i18n: {
+    getMessage: (key, subs) => {
+      const msg = localeEs[key];
+      const text = msg ? msg.message : "";
+      return text.replace(/\$(\d)/g, (all, n) => {
+        const value = subs && subs[Number(n) - 1];
+        return value == null ? "" : String(value);
+      });
+    },
+  },
+};
+if (tMatch) {
+  const tChrome = vm.runInNewContext("(" + tMatch[0].trim() + ")", {
+    chrome: chromeSinSubs,
+    fillI18n: fill,
+  });
+  ok(
+    "chrome.i18n vacía $1 cuando no hay sustitución",
+    tChrome("capGeneric", "Tope: $1p") === "Tope: p"
+  );
+  ok(
+    "UI_STRINGS preserva $1 para rellenarlo en page-hook",
+    tChrome("capGeneric", "Tope: $1p", ["$1"]) === "Tope: $1p"
+  );
+  ok(
+    "UI_STRINGS preserva varios marcadores",
+    tChrome("capBlocked", "Tope: $1p ($2p bloqueado)", ["$1", "$2"]) ===
+      "Tope: $1p ($2p bloqueado)"
+  );
+}
+
+const deferredKeys = [
+  "noticeKickFail",
+  "capBlocked",
+  "capAccount",
+  "capKick",
+  "capGeneric",
+  "autoMin",
+  "diagMissing",
+  "diagFailed",
+];
+ok(
+  "todas las claves diferidas pasan sus marcadores",
+  deferredKeys.every((key) => {
+    const line = popup.split("\n").find((l) => l.includes(`${key}: t(`));
+    return !!line && /\[\s*"\$1"/.test(line);
+  })
+);
+
+const es = localeEs;
 const en = JSON.parse(read("_locales/en/messages.json"));
 const esKeys = Object.keys(es);
 const enKeys = Object.keys(en);
