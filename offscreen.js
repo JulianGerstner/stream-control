@@ -184,10 +184,13 @@ async function handleMessage(msg, sender) {
       return { ok: false, reason: "too-many-tabs", percent };
     }
 
+    let stream = null;
     try {
-      const stream = await getTabStream(msg.streamId);
-      rememberStreamId(msg.streamId);
+      stream = await getTabStream(msg.streamId);
       const state = connectStream(tabId, stream, percent);
+      // Solo marcar el streamId como usado después de conectar: si falla, el
+      // background puede reintentar con el mismo identificador.
+      rememberStreamId(msg.streamId);
       return {
         ok: true,
         active: true,
@@ -196,6 +199,17 @@ async function handleMessage(msg, sender) {
         contextState: state.ctx.state,
       };
     } catch (e) {
+      // getUserMedia puede éxito y fallar el AudioContext. Sin esto los tracks
+      // quedan vivos: la pestaña se oye en silencio y no hay forma de recuperar
+      // la captura porque el streamId ya estaba marcado como consumido.
+      try {
+        stopTab(tabId);
+      } catch (e2) {}
+      if (stream) {
+        try {
+          stream.getTracks().forEach((t) => t.stop());
+        } catch (e2) {}
+      }
       return {
         ok: false,
         reason: "capture-failed",

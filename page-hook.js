@@ -299,6 +299,61 @@
   // una calidad bloqueada: en idle no despierta nada, en cada frame.
   let lockCheckTimer = null;
 
+  // Un índice de la lista de bitrates no es estable: en vivo el manifest se
+  // refresca y el mismo índice puede apuntar a otra variante. Guardamos también
+  // la identidad física (bitrate + altura) para re-resolverlo en cada tick.
+  function dashQualityKey(instance, id) {
+    try {
+      const b = (instance.getBitrateInfoListFor("video") || [])[id];
+      return b ? { bitrate: b.bitrate, height: b.height } : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // La mera existencia de los métodos no prueba que el player siga vivo: un
+  // MediaPlayer destruido conserva updateSettings/getBitrateInfoListFor. Si
+  // expone su <video> y ya no está conectado, fue reemplazado.
+  function lockInstanceAlive(lock, instance) {
+    if (!instance) return false;
+    try {
+      if (lock.type === "hls") {
+        if (
+          !Array.isArray(instance.levels) ||
+          typeof instance.currentLevel !== "number"
+        )
+          return false;
+      } else if (lock.type === "dash") {
+        if (
+          typeof instance.getBitrateInfoListFor !== "function" ||
+          typeof instance.updateSettings !== "function"
+        )
+          return false;
+      } else if (lock.type === "shaka") {
+        if (
+          !Array.isArray(instance.getVariantTracks()) ||
+          typeof instance.configure !== "function"
+        )
+          return false;
+      }
+    } catch (e) {
+      return false;
+    }
+    let video = null;
+    try {
+      if (typeof instance.getVideoElement === "function") {
+        video = instance.getVideoElement();
+      } else if (lock.type === "hls") {
+        video = instance.media || null;
+      } else if (typeof instance.getAttachedElement === "function") {
+        const attached = instance.getAttachedElement();
+        video = attached && attached.mediaElement ? attached.mediaElement : null;
+      }
+    } catch (e) {}
+    if (video && video.isConnected === false) return false;
+    return true;
+  }
+
   function ensureLockCheckTimer() {
     if (lockCheckTimer != null || lockedInstances.size === 0) return;
     lockCheckTimer = setInterval(() => {
@@ -308,17 +363,14 @@
         return;
       }
       lockedInstances.forEach((lock, instance) => {
-        // No despertamos cada 4 s para reafirmar un player que ya no existe.
-        if (
-          !instance ||
-          (lock.type === "hls" && typeof instance.currentLevel !== "number") ||
-          (lock.type === "dash" &&
-            typeof instance.updateSettings !== "function") ||
-          (lock.type === "shaka" && typeof instance.configure !== "function")
-        ) {
-          lockedInstances.delete(instance);
+        if (!lockInstanceAlive(lock, instance)) {
+          // Un reemplazo momentáneo del <video> no debe soltar el pin: damos
+          // unos ticks antes de podar definitivamente.
+          lock.misses = (lock.misses || 0) + 1;
+          if (lock.misses >= 3) lockedInstances.delete(instance);
           return;
         }
+        lock.misses = 0;
         if (lock.type === "shaka") reassertShakaLock(instance);
         if (lock.type === "hls" && instance.currentLevel !== lock.id) {
           try {
@@ -332,7 +384,18 @@
             instance.updateSettings({
               streaming: { abr: { autoSwitchBitrate: { video: false } } },
             });
-            instance.setQualityFor("video", lock.id);
+            let index = lock.id;
+            if (lock.bitrate != null) {
+              const list = instance.getBitrateInfoListFor("video") || [];
+              const found = list.findIndex(
+                (b) =>
+                  b.bitrate === lock.bitrate &&
+                  (!lock.height || b.height === lock.height)
+              );
+              // Si la variante ya no está en el manifest, NO forzamos otra.
+              index = found >= 0 ? found : -1;
+            }
+            if (index >= 0) instance.setQualityFor("video", index);
           } catch (e) {}
         }
       });
@@ -950,19 +1013,30 @@
   const DISNEY_FLOOR_KEY = "qs-disney-floor";
   const DISNEY_AUTO_FLOOR = 720;
 
+  // Igual que background.js: query y hash no cambian el documento. Comparar la
+  // URL completa borraba la preferencia al moverse dentro del mismo título.
+  function disneyPageKey() {
+    try {
+      const u = new URL(location.href);
+      return u.origin + u.pathname;
+    } catch (e) {
+      return String(location.href || "");
+    }
+  }
+
   function getDisneyCap() {
     try {
       const n = parseInt(sessionStorage.getItem(DISNEY_CAP_KEY) || "", 10);
       if (!Number.isFinite(n) || n <= 0) return null;
       const href = sessionStorage.getItem(DISNEY_CAP_HREF_KEY);
-      if (href && href !== location.href) {
+      if (href && href !== disneyPageKey()) {
         sessionStorage.removeItem(DISNEY_CAP_KEY);
         sessionStorage.removeItem(DISNEY_CAP_HREF_KEY);
         return null;
       }
       // Preferencia guardada antes de este arreglo: la anclamos a la página
       // actual en vez de descartarla.
-      if (!href) sessionStorage.setItem(DISNEY_CAP_HREF_KEY, location.href);
+      if (!href) sessionStorage.setItem(DISNEY_CAP_HREF_KEY, disneyPageKey());
       return n;
     } catch (e) {
       return null;
@@ -980,7 +1054,7 @@
     try {
       if (height) {
         sessionStorage.setItem(DISNEY_CAP_KEY, String(height));
-        sessionStorage.setItem(DISNEY_CAP_HREF_KEY, location.href);
+        sessionStorage.setItem(DISNEY_CAP_HREF_KEY, disneyPageKey());
       } else {
         sessionStorage.removeItem(DISNEY_CAP_KEY);
         sessionStorage.removeItem(DISNEY_CAP_HREF_KEY);
@@ -993,12 +1067,13 @@
       const v = sessionStorage.getItem(DISNEY_VARIANT_KEY);
       if (!v) return null;
       const href = sessionStorage.getItem(DISNEY_VARIANT_HREF_KEY);
-      if (href && href !== location.href) {
+      if (href && href !== disneyPageKey()) {
         sessionStorage.removeItem(DISNEY_VARIANT_KEY);
         sessionStorage.removeItem(DISNEY_VARIANT_HREF_KEY);
         return null;
       }
-      if (!href) sessionStorage.setItem(DISNEY_VARIANT_HREF_KEY, location.href);
+      if (!href)
+        sessionStorage.setItem(DISNEY_VARIANT_HREF_KEY, disneyPageKey());
       return v;
     } catch (e) {
       return null;
@@ -1009,7 +1084,7 @@
     try {
       if (key) {
         sessionStorage.setItem(DISNEY_VARIANT_KEY, String(key));
-        sessionStorage.setItem(DISNEY_VARIANT_HREF_KEY, location.href);
+        sessionStorage.setItem(DISNEY_VARIANT_HREF_KEY, disneyPageKey());
       } else {
         sessionStorage.removeItem(DISNEY_VARIANT_KEY);
         sessionStorage.removeItem(DISNEY_VARIANT_HREF_KEY);
@@ -1029,8 +1104,11 @@
     if (!res) return null;
     const height = parseInt(res[2], 10);
     if (!height) return null;
-    const bw = /(?:^|,)BANDWIDTH=(\d+)/i.exec(line);
-    const avg = /(?:^|,)AVERAGE-BANDWIDTH=(\d+)/i.exec(line);
+    // #EXT-X-STREAM-INF:BANDWIDTH=... separa con ':', no con ',' ni con inicio
+    // de línea. Sin el ':' el bitrate quedaba en 0 y el orden de variantes se
+    // rompía cuando la URI no traía el sufijo "2400k".
+    const bw = /(?:^|[:,])BANDWIDTH=(\d+)/i.exec(line);
+    const avg = /(?:^|[:,])AVERAGE-BANDWIDTH=(\d+)/i.exec(line);
     const codecs = /CODECS="([^"]*)"/i.exec(line);
     const frame = /FRAME-RATE=([\d.]+)/i.exec(line);
     const audio = /AUDIO="([^"]*)"/i.exec(line);
@@ -4403,15 +4481,19 @@
       // que realmente se leyó, más Auto.
 
       // Una preferencia vieja (de otro título) no debe quedar activa ni
-      // filtrar la sesión actual: si la altura o la variante ya no existen,
-      // la limpiamos y volvemos a Auto.
+      // filtrar la sesión actual. Pero si todavía no vimos el master, la
+      // escalera está vacía: borraríamos una elección válida antes de que el
+      // interceptor pueda aplicarla (master pedido desde un Worker, o primer
+      // jsonify justo después de la recarga).
+      const ladderSeen = heights.length > 0 || variants.length > 0;
       let cap = getDisneyCap();
-      if (cap && heights.indexOf(cap) === -1) {
+      if (ladderSeen && cap && heights.indexOf(cap) === -1) {
         storeDisneyCap(null);
         cap = null;
       }
       let variantKey = getDisneyVariantKey();
       if (
+        ladderSeen &&
         variantKey &&
         !variants.some((v) => disneyVariantKey(v) === variantKey)
       ) {
@@ -4614,7 +4696,13 @@
           streaming: { abr: { autoSwitchBitrate: { video: true } } },
         });
       } else {
-        lockedInstances.set(player.instance, { type: "dash", id });
+        lockedInstances.set(
+          player.instance,
+          Object.assign(
+            { type: "dash", id },
+            dashQualityKey(player.instance, id) || {}
+          )
+        );
         ensureLockCheckTimer();
         player.instance.updateSettings({
           streaming: { abr: { autoSwitchBitrate: { video: false } } },
@@ -5444,6 +5532,10 @@
   // <video> para que sobreviva a un cambio de elemento (nuevo episodio, el
   // reproductor recreándose, etc.) sin que el sitio recupere el control.
   let userRateChoice = null;
+  // Un solo <video> puede tener el timer de velocidad: al reemplazar el
+  // elemento (nuevo episodio, anuncio, Shorts) soltamos el anterior para no
+  // seguir escribiendo cada 250 ms en un nodo desconectado.
+  let lastTimedRateVideo = null;
 
   function getRateControlState(video) {
     let state = rateControlState.get(video);
@@ -5637,6 +5729,7 @@
 
     if (rate === 1 && !state.userPinned) {
       stopRateTick(state);
+      if (lastTimedRateVideo === video) lastTimedRateVideo = null;
       state.atLiveEdge = false;
       if (changed || userInitiated) {
         state.syncedRate = null;
@@ -5654,6 +5747,14 @@
     // un seek, volvemos a 1x en el próximo tick.
     applyRate(video, state, effectiveRateFor(video, state));
     if (state.timer == null) {
+      if (lastTimedRateVideo && lastTimedRateVideo !== video) {
+        const previous = rateControlState.get(lastTimedRateVideo);
+        if (previous) {
+          previous.released = true;
+          stopRateTick(previous);
+        }
+      }
+      lastTimedRateVideo = video;
       state.timer = setInterval(() => {
         try {
           rateTick(video, state);
@@ -5793,6 +5894,7 @@
     resetRateCounters(state);
     state.desired = 1;
     stopRateTick(state);
+    if (lastTimedRateVideo === video) lastTimedRateVideo = null;
     try {
       video.playbackRate = 1;
     } catch (e) {}

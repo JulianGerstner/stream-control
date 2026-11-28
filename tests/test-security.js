@@ -205,7 +205,7 @@ async function testOffscreen() {
 // ----------------------------------------------------------- background.js
 async function testBackground() {
   const runtimeListeners = [];
-  const updatedListeners = [];
+  const committedListeners = [];
   const sentToOffscreen = [];
   const chromeMock = {
     runtime: {
@@ -229,6 +229,9 @@ async function testBackground() {
     },
     offscreen: { createDocument: async () => {} },
     action: { setBadgeText: async () => {} },
+    webNavigation: {
+      onCommitted: { addListener: (fn) => committedListeners.push(fn) },
+    },
   };
   run(read("background.js"), {
     chrome: chromeMock,
@@ -259,7 +262,11 @@ async function testBackground() {
   ok("background acepta comando del popup", r.ok === true);
 
   const before = sentToOffscreen.length;
-  await updatedListeners[0](7, { url: "https://otro.example/llamada" }, {});
+  await committedListeners[0]({
+    tabId: 7,
+    frameId: 0,
+    url: "https://otro.example/llamada",
+  });
   await wait();
   const stop = sentToOffscreen
     .slice(before)

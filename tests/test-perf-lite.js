@@ -53,7 +53,7 @@ function testLockTimer() {
   api.ensureLockCheckTimer();
   ok("sin locks no se crea ningún interval", timers.size === 0);
 
-  const instance = { currentLevel: 2 };
+  const instance = { currentLevel: 2, levels: [] };
   lockedInstances.set(instance, { type: "hls", id: 1 });
   api.ensureLockCheckTimer();
   ok("al fijar calidad se crea exactamente un interval", timers.size === 1);

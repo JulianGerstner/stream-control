@@ -9,6 +9,7 @@ const read = (name) => fs.readFileSync(path.join(REPO, name), "utf8");
 const bg = read("background.js");
 const hook = read("page-hook.js");
 const popup = read("popup.js");
+const offscreen = read("offscreen.js");
 
 let failures = 0;
 function ok(name, cond) {
@@ -87,7 +88,7 @@ function testNavigationPage() {
 // 3) Navegar durante una activación no deja la captura creada después.
 async function testNavigationRace() {
   const listeners = [];
-  const updated = [];
+  const committed = [];
   const sent = [];
   let releaseStream;
   let streamGate = new Promise((r) => (releaseStream = r));
@@ -106,7 +107,7 @@ async function testNavigationRace() {
     },
     tabs: {
       get: async (id) => ({ id, url: "https://video.example/watch" }),
-      onUpdated: { addListener: (fn) => updated.push(fn) },
+      onUpdated: { addListener: () => {} },
       onRemoved: { addListener: () => {} },
     },
     tabCapture: {
@@ -115,6 +116,9 @@ async function testNavigationRace() {
     },
     offscreen: { createDocument: async () => {} },
     action: { setBadgeText: async () => {} },
+    webNavigation: {
+      onCommitted: { addListener: (fn) => committed.push(fn) },
+    },
   };
   run(bg, {
     chrome: chromeMock,
@@ -138,7 +142,11 @@ async function testNavigationRace() {
   );
   await wait();
   await wait(); // dejar que la tarea llegue al getMediaStreamId
-  const navPromise = updated[0](7, { url: "https://video.example/otra-pagina" });
+  const navPromise = committed[0]({
+    tabId: 7,
+    frameId: 0,
+    url: "https://video.example/otra-pagina",
+  });
   releaseStream("stream-1");
   const result = await setPromise;
   await navPromise;
@@ -151,7 +159,13 @@ async function testNavigationRace() {
     !sent.some((m) => m.type === "nds-offscreen-set")
   );
 
-  // El mismo documento (query/hash) no debe abortar una activación en vuelo.
+  // pushState/query/hash no disparan onCommitted en Chrome: el background ya
+  // no escucha tabs.onUpdated, así que no hay evento que corte la captura.
+  ok(
+    "la navegación se detecta con webNavigation.onCommitted",
+    committed.length === 1 && !/chrome\.tabs\.onUpdated/.test(bg)
+  );
+  // Un commit de iframe tampoco debe abortar la activación de la pestaña.
   streamGate = new Promise((r) => (releaseStream = r));
   const set2 = new Promise((resolve) =>
     listeners[0](
@@ -162,20 +176,21 @@ async function testNavigationRace() {
   );
   await wait();
   await wait();
-  await updated[0](7, { url: "https://video.example/watch?v=2#t=99" });
+  await committed[0]({
+    tabId: 7,
+    frameId: 3,
+    url: "https://video.example/otra-pagina",
+  });
   releaseStream("stream-2");
   const result2 = await set2;
-  ok(
-    "query/hash no aborta una activación en vuelo",
-    result2 && result2.ok === true
-  );
+  ok("un commit de iframe no aborta la activación", result2 && result2.ok === true);
   ok(
     "esa activación sí crea la captura",
     sent.some((m) => m.type === "nds-offscreen-set" && m.tabId === 7)
   );
 }
 
-// 4) El timer reaplica locks de dash y poda instancias muertas.
+// 4) El timer reaplica locks de dash, resuelve el bitrate y poda instancias.
 function testDashLockTimer() {
   const code = slice(
     hook,
@@ -190,7 +205,7 @@ function testDashLockTimer() {
     "deps",
     `const { setInterval, clearInterval, lockedInstances, reassertShakaLock } = deps;
      ${code}
-     return { ensureLockCheckTimer };`
+     return { ensureLockCheckTimer, dashQualityKey };`
   )({
     setInterval: (fn) => {
       const id = nextId++;
@@ -201,15 +216,24 @@ function testDashLockTimer() {
     lockedInstances,
     reassertShakaLock: () => {},
   });
+  const tick = () => timers.values().next().value();
 
   const calls = [];
+  let list = [
+    { bitrate: 800000, height: 480 },
+    { bitrate: 2400000, height: 720 },
+  ];
+  const video = { isConnected: true };
   const dash = {
     updateSettings: (s) => calls.push(s),
     setQualityFor: (kind, id) => calls.push(["quality", kind, id]),
+    getBitrateInfoListFor: () => list,
+    getVideoElement: () => video,
   };
-  lockedInstances.set(dash, { type: "dash", id: 5 });
+  const key = api.dashQualityKey(dash, 1);
+  lockedInstances.set(dash, { type: "dash", id: 1, ...key });
   api.ensureLockCheckTimer();
-  timers.values().next().value();
+  tick();
   ok(
     "el timer reapaga el ABR de dash",
     calls.some(
@@ -218,12 +242,36 @@ function testDashLockTimer() {
   );
   ok(
     "el timer vuelve a fijar la calidad de dash",
-    calls.some((c) => Array.isArray(c) && c[0] === "quality" && c[2] === 5)
+    calls.some((c) => Array.isArray(c) && c[0] === "quality" && c[2] === 1)
   );
+
+  // El manifest en vivo reordena la lista: el índice 1 ya no es el mismo
+  // bitrate. Tiene que re-resolverlo al 2, no forzar el 1.
+  list = [
+    { bitrate: 500000, height: 360 },
+    { bitrate: 1500000, height: 576 },
+    { bitrate: 2400000, height: 720 },
+  ];
+  tick();
+  ok(
+    "re-resuelve el bitrate si el manifest reordena la lista",
+    calls.some((c) => Array.isArray(c) && c[0] === "quality" && c[2] === 2)
+  );
+
+  // Un MediaPlayer destruido conserva sus métodos: se poda por el <video>
+  // desconectado, no solo por la forma del objeto.
+  const stale = Object.assign({}, dash, { getVideoElement: () => ({ isConnected: false }) });
+  lockedInstances.set(stale, { type: "dash", id: 0 });
+  tick();
+  tick();
+  tick();
+  ok("se poda un player con el video desconectado", !lockedInstances.has(stale));
 
   const dead = {};
   lockedInstances.set(dead, { type: "dash", id: 6 });
-  timers.values().next().value();
+  tick();
+  tick();
+  tick();
   ok("se poda una instancia muerta", !lockedInstances.has(dead));
 }
 
@@ -315,7 +363,7 @@ function testDisneyScope() {
   const location = { href: "https://disney.example/title-a" };
   const api = new Function(
     "deps",
-    `const { sessionStorage, location, Number, parseInt, String } = deps;
+    `const { sessionStorage, location, Number, parseInt, String, URL } = deps;
      ${code}
      return {
        getDisneyCap,
@@ -323,7 +371,7 @@ function testDisneyScope() {
        getDisneyVariantKey,
        storeDisneyVariantKey,
      };`
-  )({ sessionStorage, location, Number, parseInt, String });
+  )({ sessionStorage, location, Number, parseInt, String, URL });
 
   api.storeDisneyCap(720);
   ok("el cap se guarda para el título actual", api.getDisneyCap() === 720);
@@ -348,14 +396,28 @@ function testDisneyScope() {
   ok(
     "un cap viejo sin href se ancla al título actual",
     api.getDisneyCap() === 480 &&
-      store.get("qs-disney-cap-href") === location.href
+      store.get("qs-disney-cap-href") === "https://disney.example/title-c"
+  );
+
+  location.href = "https://disney.example/title-d?utm=1#capitulos";
+  api.storeDisneyCap(480);
+  location.href = "https://disney.example/title-d?utm=2#capitulos";
+  ok(
+    "query y hash no borran la preferencia dentro del mismo título",
+    api.getDisneyCap() === 480
+  );
+  ok(
+    "con escalera vacía no se descarta una preferencia válida",
+    /const ladderSeen = heights\.length > 0 \|\| variants\.length > 0;/.test(
+      hook
+    ) && /if \(ladderSeen && cap/.test(hook)
   );
 }
 
 // 8) El badge muestra el número solo si el volumen está modificado.
 async function testVolumeBadge() {
   const listeners = [];
-  const updated = [];
+  const committed = [];
   const badges = [];
   let status = { ok: true, active: false, percent: null };
   const chromeMock = {
@@ -374,7 +436,7 @@ async function testVolumeBadge() {
     },
     tabs: {
       get: async (id) => ({ id, url: "https://video.example/watch" }),
-      onUpdated: { addListener: (fn) => updated.push(fn) },
+      onUpdated: { addListener: () => {} },
       onRemoved: { addListener: () => {} },
     },
     tabCapture: {
@@ -383,6 +445,9 @@ async function testVolumeBadge() {
     },
     offscreen: { createDocument: async () => {} },
     action: { setBadgeText: async (o) => badges.push(o.text) },
+    webNavigation: {
+      onCommitted: { addListener: (fn) => committed.push(fn) },
+    },
   };
   run(bg, {
     chrome: chromeMock,
@@ -419,12 +484,163 @@ async function testVolumeBadge() {
   ok("detener la captura limpia el badge", last() === "");
 
   await call({ target: "nds-background", type: "nds-volume-set", tabId: 3, percent: 400 });
-  await updated[0](3, { url: "https://video.example/otra" });
+  await committed[0]({ tabId: 3, frameId: 0, url: "https://video.example/otra" });
   ok("navegar limpia el badge", last() === "");
   ok(
     "no escribe el mismo texto dos veces seguidas",
     badges.filter((b) => b === "400").length === 1
   );
+}
+
+// 9) El bitrate de HLS se lee con ':' separador (EXT-X-STREAM-INF).
+function testHlsBitrate() {
+  const code = slice(
+    hook,
+    "  function parseDisneyStreamInf(line, uri) {",
+    "  function parseDisneyVariants(text) {",
+    "parseDisneyStreamInf"
+  );
+  const api = new Function(
+    "deps",
+    `const { parseInt, parseFloat, String } = deps;
+     ${code}
+     return { parseDisneyStreamInf };`
+  )({ parseInt, parseFloat, String });
+  const v = api.parseDisneyStreamInf(
+    '#EXT-X-STREAM-INF:BANDWIDTH=2400000,AVERAGE-BANDWIDTH=2000000,RESOLUTION=1280x720,CODECS="avc1.64001f,mp4a.40.2"',
+    "video/720.m3u8"
+  );
+  ok("BANDWIDTH con ':' se lee", !!v && v.bandwidth === 2400000);
+  ok("AVERAGE-BANDWIDTH con ':' se lee", !!v && v.avgBandwidth === 2000000);
+}
+
+// 10) Si falla connectStream, se liberan los tracks y el streamId se reintenta.
+async function testOffscreenFailure() {
+  const code = slice(
+    offscreen,
+    '  if (msg.type === "nds-offscreen-set") {',
+    '  if (msg.type === "nds-offscreen-stop") {',
+    "offscreen set"
+  );
+  const stopped = [];
+  const used = new Set();
+  const states = new Map();
+  const deps = {
+    timers: null,
+    audioStates: states,
+    usedStreamIds: used,
+    MAX_AUDIO_STATES: 4,
+    clampVolume: (v) => v,
+    getTabStream: async () => ({
+      getTracks: () => [{ stop: () => stopped.push("track") }],
+    }),
+    connectStream: () => {
+      throw new Error("AudioContext roto");
+    },
+    rememberStreamId: (id) => used.add(id),
+    stopTab: (id) => {
+      states.delete(id);
+      stopped.push("state");
+      return true;
+    },
+  };
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const run = new AsyncFunction(
+    "deps",
+    `const { audioStates, usedStreamIds, MAX_AUDIO_STATES, getTabStream,
+             connectStream, rememberStreamId, stopTab, clampVolume, msg } = deps;
+     ${code}`
+  );
+  const res = await run(
+    Object.assign({}, deps, {
+      msg: {
+        type: "nds-offscreen-set",
+        tabId: 4,
+        percent: 150,
+        streamId: "s-fail",
+      },
+    })
+  );
+  ok(
+    "connectStream fallido devuelve error",
+    !!res && res.ok === false && res.reason === "capture-failed"
+  );
+  ok(
+    "se liberan los tracks y el estado parcial",
+    stopped.includes("track") && stopped.includes("state")
+  );
+  ok("el streamId no queda consumido", used.size === 0);
+}
+
+// 11) Un solo timer de velocidad: al cambiar de <video> se detiene el anterior.
+function testSingleRateTimer() {
+  const code = slice(
+    hook,
+    "  function pinPlaybackRate(video, rate, opts) {",
+    "  // Reafirmar apenas termina un seek.",
+    "pinPlaybackRate"
+  );
+  const timers = new Map();
+  const states = new Map();
+  const clearInterval = (id) => timers.delete(id);
+  const stopRateTick = (state) => {
+    if (state.timer != null) {
+      clearInterval(state.timer);
+      state.timer = null;
+    }
+  };
+  const getState = (video) => {
+    if (!states.has(video))
+      states.set(video, {
+        desired: 1,
+        timer: null,
+        released: false,
+        userPinned: false,
+        hits: [],
+      });
+    return states.get(video);
+  };
+  const api = new Function(
+    "deps",
+    `const { timers, rateControlState, setInterval, clearInterval,
+             getRateControlState, resetRateCounters, ensureRateGuard,
+             stopRateTick, rateTick, applyRate, effectiveRateFor, RATE_CFG } = deps;
+     let lastTimedRateVideo = null;
+     ${code}
+     return { pinPlaybackRate };`
+  )({
+    timers,
+    rateControlState: states,
+    setInterval: (fn) => {
+      const id = timers.size + 1;
+      timers.set(id, fn);
+      return id;
+    },
+    clearInterval,
+    getRateControlState: getState,
+    resetRateCounters: (s) => {
+      s.hits.length = 0;
+      s.released = false;
+    },
+    ensureRateGuard: () => {},
+    stopRateTick,
+    rateTick: () => {},
+    applyRate: () => {},
+    effectiveRateFor: (v, s) => s.desired,
+    RATE_CFG: { tickMs: 250 },
+  });
+
+  const a = { id: "video-a" };
+  const b = { id: "video-b" };
+  api.pinPlaybackRate(a, 2, { user: true });
+  ok("el primer video tiene su timer", timers.size === 1);
+  api.pinPlaybackRate(b, 2, { user: true });
+  ok("solo queda un timer tras cambiar de video", timers.size === 1);
+  ok(
+    "se detuvo el timer del video anterior",
+    states.get(a).timer === null && states.get(a).released === true
+  );
+  ok("el video nuevo queda defendido", states.get(b).timer != null);
 }
 
 (async () => {
@@ -436,6 +652,9 @@ async function testVolumeBadge() {
   testSpaceKey();
   testDisneyScope();
   await testVolumeBadge();
+  testHlsBitrate();
+  await testOffscreenFailure();
+  testSingleRateTimer();
   console.log(failures === 0 ? "TODO OK" : `FALLARON ${failures}`);
   process.exitCode = failures ? 1 : 0;
 })();

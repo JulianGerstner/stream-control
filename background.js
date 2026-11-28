@@ -404,22 +404,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true; // respuesta asíncrona
 });
 
-// Si la pestaña navega a otra URL, el tabId no cambia: sin esto seguiríamos
-// capturando su audio (por ejemplo al pasar de un video a una llamada).
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
-  if (!changeInfo || changeInfo.url === undefined) return;
-  const capturedUrl = capturedTabs.get(tabId);
-  const knownPage = capturedUrl
-    ? navigationPage(capturedUrl)
-    : inFlightPages.get(tabId) || null;
-  if (knownPage && navigationPage(changeInfo.url) === knownPage) {
-    return; // mismo documento: pushState/query/hash no cortan el volumen
-  }
+// Si la pestaña navega a otro documento, el tabId no cambia: sin esto
+// seguiríamos capturando su audio (por ejemplo al pasar de un video a una
+// llamada). onCommitted NO se dispara para pushState/replaceState ni cambios
+// de hash, así que una SPA que cambia el pathname sin recargar no corta el
+// volumen. Tampoco comparamos URLs: una recarga de la misma URL sí es un
+// documento nuevo y debe soltar la captura.
+async function handleDocumentNavigation(tabId) {
   // Invalidar primero: una activación en vuelo debe abandonarse antes de
   // crear la captura, y el stop se encola detrás de lo que ya esté corriendo.
   bumpTabGeneration(tabId);
-  capturedTabs.delete(tabId);
-  if (knownPage) {
+  const hadCapture = capturedTabs.delete(tabId);
+  const hadInFlight = inFlightPages.has(tabId);
+  if (hadCapture || hadInFlight) {
     await enqueueForTab(tabId, async () => {
       if (!(await hasOffscreenDocument())) return;
       try {
@@ -428,7 +425,14 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
     });
   }
   await setVolumeBadge(tabId, null);
-});
+}
+
+if (chrome.webNavigation && chrome.webNavigation.onCommitted) {
+  chrome.webNavigation.onCommitted.addListener((details) => {
+    if (!details || details.frameId !== 0) return; // documento principal
+    return handleDocumentNavigation(details.tabId);
+  });
+}
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   bumpTabGeneration(tabId);
