@@ -352,6 +352,81 @@ function testDisneyScope() {
   );
 }
 
+// 8) El badge muestra el número solo si el volumen está modificado.
+async function testVolumeBadge() {
+  const listeners = [];
+  const updated = [];
+  const badges = [];
+  let status = { ok: true, active: false, percent: null };
+  const chromeMock = {
+    runtime: {
+      id: "ext",
+      getURL: (p) => `chrome-extension://ext/${p}`,
+      onMessage: { addListener: (fn) => listeners.push(fn) },
+      getContexts: async () => [{}],
+      sendMessage: async (msg) => {
+        if (msg.type === "nds-offscreen-get") return status;
+        if (msg.type === "nds-offscreen-set") {
+          return { ok: true, active: true, percent: msg.percent };
+        }
+        return { ok: true };
+      },
+    },
+    tabs: {
+      get: async (id) => ({ id, url: "https://video.example/watch" }),
+      onUpdated: { addListener: (fn) => updated.push(fn) },
+      onRemoved: { addListener: () => {} },
+    },
+    tabCapture: {
+      getMediaStreamId: async () => "s-badge",
+      getCapturedTabs: async () => [],
+    },
+    offscreen: { createDocument: async () => {} },
+    action: { setBadgeText: async (o) => badges.push(o.text) },
+  };
+  run(bg, {
+    chrome: chromeMock,
+    setTimeout,
+    clearTimeout,
+    Map,
+    Number,
+    String,
+    URL,
+    Promise,
+    console,
+  });
+  const sender = { id: "ext", url: "chrome-extension://ext/popup.html" };
+  const call = (msg) =>
+    new Promise((resolve) => listeners[0](msg, sender, resolve));
+  const last = () => badges[badges.length - 1];
+
+  await call({ target: "nds-background", type: "nds-volume-set", tabId: 3, percent: 150 });
+  ok("150 % muestra 150 en el icono", last() === "150");
+  await call({ target: "nds-background", type: "nds-volume-set", tabId: 3, percent: 100 });
+  ok("volver a 100 % limpia el badge", last() === "");
+  await call({ target: "nds-background", type: "nds-volume-set", tabId: 3, percent: 0 });
+  ok("0 % también se muestra", last() === "0");
+
+  status = { ok: true, active: true, percent: 250 };
+  await call({ target: "nds-background", type: "nds-volume-get", tabId: 3 });
+  ok("el poll restaura el número si sigue activo", last() === "250");
+  status = { ok: true, active: false, percent: null };
+  await call({ target: "nds-background", type: "nds-volume-get", tabId: 3 });
+  ok("sin captura limpia el badge", last() === "");
+
+  await call({ target: "nds-background", type: "nds-volume-set", tabId: 3, percent: 300 });
+  await call({ target: "nds-background", type: "nds-volume-stop", tabId: 3 });
+  ok("detener la captura limpia el badge", last() === "");
+
+  await call({ target: "nds-background", type: "nds-volume-set", tabId: 3, percent: 400 });
+  await updated[0](3, { url: "https://video.example/otra" });
+  ok("navegar limpia el badge", last() === "");
+  ok(
+    "no escribe el mismo texto dos veces seguidas",
+    badges.filter((b) => b === "400").length === 1
+  );
+}
+
 (async () => {
   await testQueue();
   testNavigationPage();
@@ -360,6 +435,7 @@ function testDisneyScope() {
   testHlsErrorTimeout();
   testSpaceKey();
   testDisneyScope();
+  await testVolumeBadge();
   console.log(failures === 0 ? "TODO OK" : `FALLARON ${failures}`);
   process.exitCode = failures ? 1 : 0;
 })();

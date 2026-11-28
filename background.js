@@ -17,6 +17,7 @@ const OFFSCREEN_PATH = "offscreen.html";
 const BG_TARGET = "nds-background";
 const OFFSCREEN_TARGET = "nds-offscreen";
 const VOLUME_VALUE_MAX = 600;
+const VOLUME_VALUE_DEFAULT = 100;
 
 //chrome.i18n elige el idioma de la UI del navegador (ver _locales/).
 //El fallback en español mantiene los mensajes legibles en entornos de test
@@ -45,6 +46,26 @@ const tabGenerations = new Map();
 // cambio de documento de un simple pushState/hash aunque todavía no haya
 // captura registrada.
 const inFlightPages = new Map();
+// Último texto puesto en el badge por pestaña: evita escribir lo mismo en cada
+// poll del popup, que consulta el estado varias veces por segundo.
+const badgeTexts = new Map();
+
+// El número de volumen aparece en el icono solo cuando la ganancia cambió de
+// 100 %. 100 % (o sin captura) deja el badge vacío.
+async function setVolumeBadge(tabId, percent) {
+  let text = "";
+  if (percent != null) {
+    const n = clampVolume(percent);
+    if (n !== VOLUME_VALUE_DEFAULT) text = String(n);
+  }
+  if (badgeTexts.get(tabId) === text) return;
+  badgeTexts.set(tabId, text);
+  try {
+    await chrome.action.setBadgeText({ text, tabId });
+  } catch (e) {
+    badgeTexts.delete(tabId);
+  }
+}
 
 function bumpTabGeneration(tabId) {
   const next = (tabGenerations.get(tabId) || 0) + 1;
@@ -222,6 +243,7 @@ async function setVolumeForTab(tabId, percentValue) {
       if (stale()) return navigated();
       if (updated && updated.ok) {
         capturedTabs.set(tabId, url);
+        await setVolumeBadge(tabId, updated.percent != null ? updated.percent : percent);
         return updated;
       }
       // Si falló, seguimos abajo y probamos recrear la captura.
@@ -288,10 +310,12 @@ async function setVolumeForTab(tabId, percentValue) {
       await sendToOffscreen({ type: "nds-offscreen-stop", tabId });
     } catch (e) {}
     capturedTabs.delete(tabId);
+    await setVolumeBadge(tabId, null);
     return navigated();
   }
   if (result && result.ok) {
     capturedTabs.set(tabId, url);
+    await setVolumeBadge(tabId, result.percent != null ? result.percent : percent);
     return result;
   }
 
@@ -315,20 +339,22 @@ async function handleMessage(msg, sender) {
   if (!isFromPopup(sender)) return undefined;
 
   if (msg.type === "nds-volume-get") {
-    if (!(await operableTabUrl(msg.tabId))) {
+    const inactive = async () => {
+      await setVolumeBadge(msg.tabId, null);
       return { ok: true, active: false, percent: null };
-    }
-    if (!(await hasOffscreenDocument())) {
-      return { ok: true, active: false, percent: null };
-    }
+    };
+    if (!(await operableTabUrl(msg.tabId))) return inactive();
+    if (!(await hasOffscreenDocument())) return inactive();
     try {
       const status = await sendToOffscreen({
         type: "nds-offscreen-get",
         tabId: msg.tabId,
       });
-      return status || { ok: true, active: false, percent: null };
+      if (!status || !status.active) return inactive();
+      await setVolumeBadge(msg.tabId, status.percent);
+      return status;
     } catch (e) {
-      return { ok: true, active: false, percent: null };
+      return inactive();
     }
   }
 
@@ -353,6 +379,7 @@ async function handleMessage(msg, sender) {
           tabId: msg.tabId,
         });
         capturedTabs.delete(msg.tabId);
+        await setVolumeBadge(msg.tabId, null);
         return result;
       } catch (e) {
         return { ok: false, error: String(e) };
@@ -400,9 +427,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
       } catch (e) {}
     });
   }
-  try {
-    await chrome.action.setBadgeText({ text: "", tabId });
-  } catch (e) {}
+  await setVolumeBadge(tabId, null);
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
@@ -413,8 +438,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
       await sendToOffscreen({ type: "nds-offscreen-stop", tabId });
     }
   } catch (e) {}
-  try {
-    await chrome.action.setBadgeText({ text: "", tabId });
-  } catch (e) {}
+  await setVolumeBadge(tabId, null);
+  badgeTexts.delete(tabId);
   perTabQueue.delete(tabId);
 });

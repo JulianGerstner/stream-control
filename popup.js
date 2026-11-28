@@ -865,7 +865,6 @@ document.addEventListener("DOMContentLoaded", () => {
           renderVolumeValue(applied);
           setVolumeStatus(t("captureActive", "Captura activa"));
           volumeStopEl.hidden = false;
-          chrome.action.setBadgeText({ text: String(applied), tabId }).catch(() => {});
         }
       );
     });
@@ -1003,7 +1002,6 @@ document.addEventListener("DOMContentLoaded", () => {
           volumeBusy = false;
           volumeStopEl.hidden = true;
           setVolumeStatus(t("noCapture", "Sin captura"));
-          chrome.action.setBadgeText({ text: "", tabId }).catch(() => {});
         }
       );
     });

@@ -30,7 +30,7 @@ directorio.
 | `test-kick-cog.js` | Elección del botón de ajustes frente a subtítulos/audio. |
 | `test-kick-wrong-menu.js` | Cerrar un menú equivocado y probar el siguiente candidato. |
 | `test-i18n.js` | Textos, marcadores y claves de `es`/`en` en popup, background y page-hook. |
-| `test-regressions.js` | Carrera de navegación con volumen, locks de dash, timeout de HLS, tecla Space y preferencias de Disney por título. |
+| `test-regressions.js` | Carrera de navegación con volumen, badge del icono, locks de dash, timeout de HLS, tecla Space y preferencias de Disney por título. |
 | `test-kick-dom2.js` | Diagnóstico de lectura del menú de Kick (no tiene asserts). |
 
 Estado al publicar `1.5.8`: los 10 scripts con asserts terminan con `PASS` /
